@@ -34,34 +34,6 @@ async def enviar_mensagem(telefone: str, texto: str):
         resp.raise_for_status()
 
 
-async def enviar_botoes_sim_nao(telefone: str, texto: str) -> bool:
-    """Envia mensagem com botões Sim/Não. Retorna True se enviou com sucesso."""
-    url = f"{EVOLUTION_API_URL}/message/sendButtons/{EVOLUTION_INSTANCE}"
-    headers = {
-        "apikey": EVOLUTION_API_KEY,
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "number": telefone,
-        "title": "Confirmação",
-        "description": texto,
-        "footer": "Toque para responder",
-        "buttons": [
-            {"type": "reply", "displayText": "✅ Sim", "id": "confirmar_sim"},
-            {"type": "reply", "displayText": "❌ Não", "id": "confirmar_nao"},
-        ],
-    }
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-        print(f"[BOTOES] Enviados com sucesso para {telefone}", flush=True)
-        return True
-    except Exception as e:
-        print(f"[BOTOES] Falhou ({e}) — fallback para texto", flush=True)
-        return False
-
-
 def extrair_telefone(data: dict) -> str:
     """Extrai número de telefone do payload da Evolution API."""
     # Evolution v2 format
@@ -71,39 +43,37 @@ def extrair_telefone(data: dict) -> str:
     return remote_jid.replace("@s.whatsapp.net", "").replace("@g.us", "")
 
 
+# Emojis tratados como confirmação positiva (👍 = SIM)
+EMOJIS_SIM = {"👍", "👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿",
+              "✅", "✔️", "❤️", "🔥", "💯", "👌", "👌🏻", "👌🏼", "👌🏽", "👌🏾", "👌🏿"}
+
+# Emojis tratados como negação (👎 = NÃO)
+EMOJIS_NAO = {"👎", "👎🏻", "👎🏼", "👎🏽", "👎🏾", "👎🏿", "❌", "🚫", "✖️"}
+
+
 def extrair_texto(data: dict) -> str:
-    """Extrai texto da mensagem (inclusive cliques de botão)."""
+    """Extrai texto da mensagem (inclusive reactions emoji)."""
     message = data.get("message", {})
+
+    # Reaction (toque longo + emoji em uma mensagem do bot)
+    if "reactionMessage" in message:
+        emoji = (message["reactionMessage"] or {}).get("text", "")
+        if not emoji:
+            # Reaction removida - ignora
+            return ""
+        if emoji in EMOJIS_SIM:
+            return "sim"
+        if emoji in EMOJIS_NAO:
+            return "não"
+        # Outras reactions: ignora silenciosamente
+        return ""
+
     # Texto simples
     if "conversation" in message:
         return message["conversation"]
     # Texto em mensagem extendida
     if "extendedTextMessage" in message:
         return message["extendedTextMessage"].get("text", "")
-    # Resposta de botão (Baileys/Evolution): buttonsResponseMessage
-    if "buttonsResponseMessage" in message:
-        btn = message["buttonsResponseMessage"]
-        button_id = btn.get("selectedButtonId", "")
-        display = btn.get("selectedDisplayText", "")
-        if button_id == "confirmar_sim":
-            return "sim"
-        if button_id == "confirmar_nao":
-            return "não"
-        return display or button_id
-    # Resposta de template button
-    if "templateButtonReplyMessage" in message:
-        btn = message["templateButtonReplyMessage"]
-        return btn.get("selectedDisplayText") or btn.get("selectedId", "")
-    # Resposta de mensagem interativa (interactiveResponseMessage)
-    if "interactiveResponseMessage" in message:
-        ir = message["interactiveResponseMessage"]
-        nm = ir.get("nativeFlowResponseMessage", {})
-        params = nm.get("paramsJson", "")
-        if "confirmar_sim" in params:
-            return "sim"
-        if "confirmar_nao" in params:
-            return "não"
-        return params
     # Legenda de imagem
     if "imageMessage" in message:
         return message["imageMessage"].get("caption", "")
