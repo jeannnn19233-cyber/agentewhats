@@ -200,7 +200,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
             contexto = (
                 f"O usuário quer registrar uma conta. NÃO foi salva ainda — está aguardando confirmação. "
                 f"Mostre EXATAMENTE este preview e pergunte se pode confirmar:\n\n{preview}\n\n"
-                f"Termine com: 'Posso registrar? (responda sim ou não)'"
+                f"Termine com a pergunta de confirmação no formato:\n\n━━━━━━━━━━━━━━━\n*Posso registrar?*\n\n✅ Responda *SIM* para confirmar\n❌ Responda *NÃO* para cancelar\n━━━━━━━━━━━━━━━"
             )
         else:
             contexto = "O usuário quer registrar uma conta mas faltam dados (valor e/ou descrição). Peça os dados que faltam de forma direta."
@@ -229,7 +229,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
             contexto = (
                 f"O usuário quer registrar um gasto. NÃO foi salvo ainda — está aguardando confirmação. "
                 f"Mostre EXATAMENTE este preview e pergunte se pode confirmar:\n\n{preview}\n\n"
-                f"Termine com: 'Posso registrar? (responda sim ou não)'"
+                f"Termine com a pergunta de confirmação no formato:\n\n━━━━━━━━━━━━━━━\n*Posso registrar?*\n\n✅ Responda *SIM* para confirmar\n❌ Responda *NÃO* para cancelar\n━━━━━━━━━━━━━━━"
             )
         else:
             contexto = "O usuário quer registrar um gasto mas faltam dados. Peça os dados que faltam de forma direta."
@@ -258,7 +258,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
             contexto = (
                 f"O usuário quer registrar um aluguel. NÃO foi salvo ainda — está aguardando confirmação. "
                 f"Mostre este preview e pergunte se pode confirmar:\n\n{preview}\n\n"
-                f"Termine com: 'Posso registrar? (responda sim ou não)'"
+                f"Termine com a pergunta de confirmação no formato:\n\n━━━━━━━━━━━━━━━\n*Posso registrar?*\n\n✅ Responda *SIM* para confirmar\n❌ Responda *NÃO* para cancelar\n━━━━━━━━━━━━━━━"
             )
         else:
             contexto = "O usuário quer registrar um aluguel mas faltam dados (imóvel e/ou valor). Peça o que faltar."
@@ -283,7 +283,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
             contexto = (
                 f"O usuário quer cadastrar um fornecedor. NÃO foi salvo ainda — está aguardando confirmação. "
                 f"Mostre este preview e pergunte se pode confirmar:\n\n{preview}\n\n"
-                f"Termine com: 'Posso cadastrar? (responda sim ou não)'"
+                f"Termine com a pergunta de confirmação no formato:\n\n━━━━━━━━━━━━━━━\n*Posso cadastrar?*\n\n✅ Responda *SIM* para confirmar\n❌ Responda *NÃO* para cancelar\n━━━━━━━━━━━━━━━"
             )
         else:
             contexto = "O usuário quer cadastrar um fornecedor mas não informou o nome. Pergunte o nome."

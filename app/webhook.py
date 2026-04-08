@@ -186,16 +186,9 @@ async def webhook_evolution(request: Request):
         else:
             return {"status": "ignored", "reason": "no content"}
 
-        # Sempre envia o texto principal (garante entrega mesmo se WhatsApp bloquear botões)
+        # Envia a resposta como texto (botões nativos do WhatsApp são bloqueados
+        # pelo Meta para contas pessoais, então usamos texto sempre).
         await enviar_mensagem(telefone, resposta)
-
-        # Se há ação pendente, tenta enviar botões como complemento opcional
-        pendente = db.obter_pending_action(telefone)
-        if pendente:
-            await enviar_botoes_sim_nao(
-                telefone,
-                "Toque em uma opção abaixo (ou responda sim/não):",
-            )
 
     except Exception as e:
         print(f"[WEBHOOK ERROR] {type(e).__name__}: {e}", flush=True)
