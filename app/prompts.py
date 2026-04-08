@@ -70,15 +70,16 @@ Retorne APENAS o JSON, sem texto adicional.
 """
 
 INTENT_PROMPT = """Analise a mensagem do usuário e classifique a intenção.
+Use o HISTÓRICO DA CONVERSA para entender o contexto (ex: se o bot acabou de pedir confirmação, "sim" significa confirmar).
 Retorne APENAS um JSON com:
 
 {
-  "intencao": "registrar_conta" | "registrar_gasto" | "registrar_aluguel" | "cadastrar_fornecedor" | "consultar_contas" | "consultar_gastos" | "consultar_fornecedores" | "consultar_alugueis" | "resumo_financeiro" | "dica_financeira" | "saudacao" | "outro",
+  "intencao": "confirmar" | "cancelar" | "registrar_conta" | "registrar_gasto" | "registrar_aluguel" | "cadastrar_fornecedor" | "consultar_contas" | "consultar_gastos" | "consultar_fornecedores" | "consultar_alugueis" | "resumo_financeiro" | "dica_financeira" | "saudacao" | "outro",
   "dados": {
     "descricao": (se mencionado),
     "valor": (número se mencionado),
     "vencimento": (data se mencionada, formato AAAA-MM-DD),
-    "categoria": (se mencionada),
+    "categoria": (se mencionada — infira automaticamente se possível: alimentação, transporte, lazer, saúde, moradia, educação, vestuário, etc),
     "fornecedor": (se mencionado),
     "imovel": (se mencionado),
     "locatario": (se mencionado),
@@ -86,7 +87,16 @@ Retorne APENAS um JSON com:
   }
 }
 
-Mensagem: {mensagem}
+Regras importantes:
+- "sim", "ok", "pode", "confirma", "isso", "correto", "manda ver", "salva", "tá certo" → intencao "confirmar" (SOMENTE se o histórico mostrar que o bot pediu confirmação)
+- "não", "cancela", "errado", "deixa pra lá", "espera" → intencao "cancelar" (SOMENTE se houver pedido de confirmação no histórico)
+- Se a mensagem completar dados de um pedido anterior (ex: bot pediu "qual a descrição?" e usuário responde "almoço"), classifique como o tipo de registro original e preencha os dados
+- Categorize gastos automaticamente quando óbvio (almoço/jantar/lanche → alimentação, uber/gasolina → transporte, etc)
+
+HISTÓRICO DA CONVERSA (mais antigo → mais recente):
+{historico}
+
+Mensagem atual do usuário: {mensagem}
 
 Retorne APENAS o JSON.
 """

@@ -159,6 +159,56 @@ def salvar_conversa(telefone: str, mensagem: str, resposta: str) -> dict:
     return result.data[0] if result.data else {}
 
 
+def ultimas_conversas(telefone: str, limit: int = 5) -> list[dict]:
+    """Retorna as últimas N conversas de um telefone, mais antigas primeiro."""
+    result = (
+        supabase.table("conversas")
+        .select("mensagem, resposta, criado_em")
+        .eq("telefone", telefone)
+        .order("criado_em", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    rows = result.data or []
+    return list(reversed(rows))  # mais antigas primeiro p/ contexto cronológico
+
+
+# ===================== AÇÕES PENDENTES (CONFIRMAÇÃO) =====================
+
+def criar_pending_action(telefone: str, action_type: str,
+                         action_data: dict, preview: str = "") -> dict:
+    """Salva uma ação aguardando confirmação do usuário."""
+    # Limpa pendentes antigas do mesmo telefone para evitar acúmulo
+    limpar_pending_actions(telefone)
+    data = {
+        "telefone": telefone,
+        "action_type": action_type,
+        "action_data": action_data,
+        "preview": preview,
+    }
+    result = supabase.table("pending_actions").insert(data).execute()
+    return result.data[0] if result.data else {}
+
+
+def obter_pending_action(telefone: str) -> dict | None:
+    """Retorna a ação pendente mais recente do telefone (ou None)."""
+    result = (
+        supabase.table("pending_actions")
+        .select("*")
+        .eq("telefone", telefone)
+        .order("criado_em", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def limpar_pending_actions(telefone: str) -> None:
+    """Remove todas as ações pendentes do telefone."""
+    supabase.table("pending_actions").delete().eq("telefone", telefone).execute()
+
+
 # ===================== RESUMO FINANCEIRO =====================
 
 def resumo_financeiro(periodo: str = "mes") -> dict:
