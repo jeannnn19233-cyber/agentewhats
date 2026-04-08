@@ -1,4 +1,6 @@
 import os
+import sys
+import traceback
 import httpx
 from fastapi import APIRouter, Request, HTTPException
 from dotenv import load_dotenv
@@ -75,6 +77,7 @@ def extrair_imagem_url(data: dict) -> str | None:
 async def webhook_evolution(request: Request):
     """Recebe webhooks da Evolution API (mensagens do WhatsApp)."""
     body = await request.json()
+    print(f"[WEBHOOK] Payload recebido: {body}", flush=True)
 
     # Verifica o secret se configurado
     if WEBHOOK_SECRET:
@@ -135,8 +138,14 @@ async def webhook_evolution(request: Request):
         await enviar_mensagem(telefone, resposta)
 
     except Exception as e:
+        print(f"[WEBHOOK ERROR] {type(e).__name__}: {e}", flush=True)
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
         error_msg = "Desculpe, tive um problema ao processar sua mensagem. Tente novamente em instantes."
-        await enviar_mensagem(telefone, error_msg)
-        raise HTTPException(status_code=500, detail=str(e))
+        try:
+            await enviar_mensagem(telefone, error_msg)
+        except Exception as send_err:
+            print(f"[WEBHOOK ERROR] Falha ao enviar fallback: {send_err}", flush=True)
+        return {"status": "error", "detail": str(e)}
 
     return {"status": "ok"}
