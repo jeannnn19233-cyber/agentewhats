@@ -17,7 +17,7 @@ def classificar_intencao(mensagem: str) -> dict:
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "user", "content": INTENT_PROMPT.format(mensagem=mensagem)},
+            {"role": "user", "content": INTENT_PROMPT.replace("{mensagem}", mensagem)},
         ],
         max_tokens=300,
         temperature=0,
