@@ -19,7 +19,7 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 
 async def enviar_mensagem(telefone: str, texto: str):
-    """Envia mensagem de volta pelo WhatsApp via Evolution API."""
+    """Envia mensagem de texto via Evolution API."""
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE}"
     headers = {
         "apikey": EVOLUTION_API_KEY,
@@ -34,6 +34,34 @@ async def enviar_mensagem(telefone: str, texto: str):
         resp.raise_for_status()
 
 
+async def enviar_botoes_sim_nao(telefone: str, texto: str) -> bool:
+    """Envia mensagem com botões Sim/Não. Retorna True se enviou com sucesso."""
+    url = f"{EVOLUTION_API_URL}/message/sendButtons/{EVOLUTION_INSTANCE}"
+    headers = {
+        "apikey": EVOLUTION_API_KEY,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "number": telefone,
+        "title": "Confirmação",
+        "description": texto,
+        "footer": "Toque para responder",
+        "buttons": [
+            {"type": "reply", "displayText": "✅ Sim", "id": "confirmar_sim"},
+            {"type": "reply", "displayText": "❌ Não", "id": "confirmar_nao"},
+        ],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+        print(f"[BOTOES] Enviados com sucesso para {telefone}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[BOTOES] Falhou ({e}) — fallback para texto", flush=True)
+        return False
+
+
 def extrair_telefone(data: dict) -> str:
     """Extrai número de telefone do payload da Evolution API."""
     # Evolution v2 format
@@ -44,7 +72,7 @@ def extrair_telefone(data: dict) -> str:
 
 
 def extrair_texto(data: dict) -> str:
-    """Extrai texto da mensagem."""
+    """Extrai texto da mensagem (inclusive cliques de botão)."""
     message = data.get("message", {})
     # Texto simples
     if "conversation" in message:
@@ -52,6 +80,30 @@ def extrair_texto(data: dict) -> str:
     # Texto em mensagem extendida
     if "extendedTextMessage" in message:
         return message["extendedTextMessage"].get("text", "")
+    # Resposta de botão (Baileys/Evolution): buttonsResponseMessage
+    if "buttonsResponseMessage" in message:
+        btn = message["buttonsResponseMessage"]
+        button_id = btn.get("selectedButtonId", "")
+        display = btn.get("selectedDisplayText", "")
+        if button_id == "confirmar_sim":
+            return "sim"
+        if button_id == "confirmar_nao":
+            return "não"
+        return display or button_id
+    # Resposta de template button
+    if "templateButtonReplyMessage" in message:
+        btn = message["templateButtonReplyMessage"]
+        return btn.get("selectedDisplayText") or btn.get("selectedId", "")
+    # Resposta de mensagem interativa (interactiveResponseMessage)
+    if "interactiveResponseMessage" in message:
+        ir = message["interactiveResponseMessage"]
+        nm = ir.get("nativeFlowResponseMessage", {})
+        params = nm.get("paramsJson", "")
+        if "confirmar_sim" in params:
+            return "sim"
+        if "confirmar_nao" in params:
+            return "não"
+        return params
     # Legenda de imagem
     if "imageMessage" in message:
         return message["imageMessage"].get("caption", "")
@@ -134,8 +186,14 @@ async def webhook_evolution(request: Request):
         else:
             return {"status": "ignored", "reason": "no content"}
 
-        # Envia resposta pelo WhatsApp
-        await enviar_mensagem(telefone, resposta)
+        # Se a mensagem gerou uma ação pendente, envia como botões Sim/Não.
+        # Caso contrário (ou se botões falharem), envia como texto normal.
+        pendente = db.obter_pending_action(telefone)
+        enviou_botoes = False
+        if pendente:
+            enviou_botoes = await enviar_botoes_sim_nao(telefone, resposta)
+        if not enviou_botoes:
+            await enviar_mensagem(telefone, resposta)
 
     except Exception as e:
         print(f"[WEBHOOK ERROR] {type(e).__name__}: {e}", flush=True)
