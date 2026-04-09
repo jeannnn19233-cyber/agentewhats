@@ -13,9 +13,10 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ===================== CONTAS A PAGAR =====================
 
-def criar_conta(descricao: str, valor: float, vencimento: str,
+def criar_conta(telefone: str, descricao: str, valor: float, vencimento: str,
                 fornecedor: str | None = None, categoria: str | None = None) -> dict:
     data = {
+        "telefone": telefone,
         "descricao": descricao,
         "valor": valor,
         "vencimento": vencimento,
@@ -30,20 +31,21 @@ def criar_conta(descricao: str, valor: float, vencimento: str,
     return result.data[0] if result.data else {}
 
 
-def listar_contas(status: str | None = None) -> list[dict]:
-    query = supabase.table("contas_pagar").select("*").order("vencimento")
+def listar_contas(telefone: str, status: str | None = None) -> list[dict]:
+    query = supabase.table("contas_pagar").select("*").eq("telefone", telefone).order("vencimento")
     if status:
         query = query.eq("status", status)
     result = query.execute()
     return result.data or []
 
 
-def contas_proximas_vencimento(dias: int = 7) -> list[dict]:
+def contas_proximas_vencimento(telefone: str, dias: int = 7) -> list[dict]:
     hoje = date.today().isoformat()
     limite = (date.today() + timedelta(days=dias)).isoformat()
     result = (
         supabase.table("contas_pagar")
         .select("*")
+        .eq("telefone", telefone)
         .eq("status", "pendente")
         .gte("vencimento", hoje)
         .lte("vencimento", limite)
@@ -53,11 +55,12 @@ def contas_proximas_vencimento(dias: int = 7) -> list[dict]:
     return result.data or []
 
 
-def marcar_conta_paga(conta_id: int) -> dict:
+def marcar_conta_paga(telefone: str, conta_id: int) -> dict:
     result = (
         supabase.table("contas_pagar")
         .update({"status": "pago"})
         .eq("id", conta_id)
+        .eq("telefone", telefone)
         .execute()
     )
     return result.data[0] if result.data else {}
@@ -65,9 +68,9 @@ def marcar_conta_paga(conta_id: int) -> dict:
 
 # ===================== FORNECEDORES =====================
 
-def criar_fornecedor(nome: str, contato: str | None = None,
+def criar_fornecedor(telefone: str, nome: str, contato: str | None = None,
                      categoria: str | None = None) -> dict:
-    data = {"nome": nome}
+    data = {"telefone": telefone, "nome": nome}
     if contato:
         data["contato"] = contato
     if categoria:
@@ -77,16 +80,17 @@ def criar_fornecedor(nome: str, contato: str | None = None,
     return result.data[0] if result.data else {}
 
 
-def listar_fornecedores() -> list[dict]:
-    result = supabase.table("fornecedores").select("*").order("nome").execute()
+def listar_fornecedores(telefone: str) -> list[dict]:
+    result = supabase.table("fornecedores").select("*").eq("telefone", telefone).order("nome").execute()
     return result.data or []
 
 
 # ===================== GASTOS PESSOAIS =====================
 
-def criar_gasto(descricao: str, valor: float, data_gasto: str,
+def criar_gasto(telefone: str, descricao: str, valor: float, data_gasto: str,
                 categoria: str | None = None) -> dict:
     data = {
+        "telefone": telefone,
         "descricao": descricao,
         "valor": valor,
         "data": data_gasto,
@@ -98,7 +102,7 @@ def criar_gasto(descricao: str, valor: float, data_gasto: str,
     return result.data[0] if result.data else {}
 
 
-def listar_gastos(periodo: str = "mes") -> list[dict]:
+def listar_gastos(telefone: str, periodo: str = "mes") -> list[dict]:
     hoje = date.today()
     if periodo == "semana":
         inicio = (hoje - timedelta(days=hoje.weekday())).isoformat()
@@ -110,6 +114,7 @@ def listar_gastos(periodo: str = "mes") -> list[dict]:
     result = (
         supabase.table("gastos_pessoais")
         .select("*")
+        .eq("telefone", telefone)
         .gte("data", inicio)
         .order("data", desc=True)
         .execute()
@@ -117,16 +122,17 @@ def listar_gastos(periodo: str = "mes") -> list[dict]:
     return result.data or []
 
 
-def total_gastos(periodo: str = "mes") -> float:
-    gastos = listar_gastos(periodo)
+def total_gastos(telefone: str, periodo: str = "mes") -> float:
+    gastos = listar_gastos(telefone, periodo)
     return sum(g["valor"] for g in gastos)
 
 
 # ===================== ALUGUÉIS =====================
 
-def criar_aluguel(imovel: str, valor: float, vencimento: str,
+def criar_aluguel(telefone: str, imovel: str, valor: float, vencimento: str,
                   locatario: str | None = None) -> dict:
     data = {
+        "telefone": telefone,
         "imovel": imovel,
         "valor": valor,
         "vencimento": vencimento,
@@ -139,8 +145,8 @@ def criar_aluguel(imovel: str, valor: float, vencimento: str,
     return result.data[0] if result.data else {}
 
 
-def listar_alugueis(status: str | None = None) -> list[dict]:
-    query = supabase.table("alugueis").select("*").order("vencimento")
+def listar_alugueis(telefone: str, status: str | None = None) -> list[dict]:
+    query = supabase.table("alugueis").select("*").eq("telefone", telefone).order("vencimento")
     if status:
         query = query.eq("status", status)
     result = query.execute()
@@ -159,7 +165,7 @@ def salvar_conversa(telefone: str, mensagem: str, resposta: str) -> dict:
     return result.data[0] if result.data else {}
 
 
-def ultimas_conversas(telefone: str, limit: int = 5) -> list[dict]:
+def ultimas_conversas(telefone: str, limit: int = 15) -> list[dict]:
     """Retorna as últimas N conversas de um telefone, mais antigas primeiro."""
     result = (
         supabase.table("conversas")
@@ -211,10 +217,10 @@ def limpar_pending_actions(telefone: str) -> None:
 
 # ===================== RESUMO FINANCEIRO =====================
 
-def resumo_financeiro(periodo: str = "mes") -> dict:
-    gastos = listar_gastos(periodo)
-    contas = listar_contas()
-    alugueis = listar_alugueis()
+def resumo_financeiro(telefone: str, periodo: str = "mes") -> dict:
+    gastos = listar_gastos(telefone, periodo)
+    contas = listar_contas(telefone)
+    alugueis = listar_alugueis(telefone)
 
     total_g = sum(g["valor"] for g in gastos)
     contas_pendentes = [c for c in contas if c.get("status") == "pendente"]
@@ -235,5 +241,5 @@ def resumo_financeiro(periodo: str = "mes") -> dict:
         "total_contas_pendentes": total_contas_pendentes,
         "alugueis_pendentes": len([a for a in alugueis if a.get("status") == "pendente"]),
         "total_alugueis_pendentes": total_alugueis,
-        "proximas_vencimento": contas_proximas_vencimento(7),
+        "proximas_vencimento": contas_proximas_vencimento(telefone, 7),
     }

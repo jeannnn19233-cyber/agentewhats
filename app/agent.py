@@ -85,8 +85,8 @@ def gerar_resposta(mensagem: str, historico: list[dict], contexto: str = "") -> 
     response = client.chat.completions.create(
         model=MODEL,
         messages=messages,
-        max_tokens=800,
-        temperature=0.7,
+        max_tokens=1500,
+        temperature=0.3,
     )
     return response.choices[0].message.content or "Desculpe, não consegui processar sua mensagem."
 
@@ -95,13 +95,14 @@ def gerar_resposta(mensagem: str, historico: list[dict], contexto: str = "") -> 
 # Execução de ações pendentes (após confirmação)
 # ============================================================
 
-def executar_pending_action(action: dict) -> str:
+def executar_pending_action(telefone: str, action: dict) -> str:
     """Executa uma ação que estava aguardando confirmação."""
     tipo = action.get("action_type")
     dados = action.get("action_data") or {}
 
     if tipo == "criar_conta":
-        conta = db.criar_conta(
+        db.criar_conta(
+            telefone=telefone,
             descricao=dados["descricao"],
             valor=float(dados["valor"]),
             vencimento=dados["vencimento"],
@@ -111,7 +112,8 @@ def executar_pending_action(action: dict) -> str:
         return f"Conta registrada: {dados['descricao']} — {_formatar_valor(dados['valor'])} — vence {dados['vencimento']}"
 
     if tipo == "criar_gasto":
-        gasto = db.criar_gasto(
+        db.criar_gasto(
+            telefone=telefone,
             descricao=dados["descricao"],
             valor=float(dados["valor"]),
             data_gasto=dados.get("data", date.today().isoformat()),
@@ -121,6 +123,7 @@ def executar_pending_action(action: dict) -> str:
 
     if tipo == "criar_aluguel":
         db.criar_aluguel(
+            telefone=telefone,
             imovel=dados["imovel"],
             valor=float(dados["valor"]),
             vencimento=dados["vencimento"],
@@ -130,6 +133,7 @@ def executar_pending_action(action: dict) -> str:
 
     if tipo == "criar_fornecedor":
         db.criar_fornecedor(
+            telefone=telefone,
             nome=dados["nome"],
             contato=dados.get("contato"),
             categoria=dados.get("categoria"),
@@ -145,7 +149,7 @@ def executar_pending_action(action: dict) -> str:
 
 def processar_mensagem(telefone: str, mensagem: str) -> str:
     """Processa uma mensagem de texto e retorna a resposta."""
-    historico = db.ultimas_conversas(telefone, limit=5)
+    historico = db.ultimas_conversas(telefone, limit=15)
     classificacao = classificar_intencao(mensagem, historico)
     intencao = classificacao.get("intencao", "outro")
     dados = classificacao.get("dados", {}) or {}
@@ -157,11 +161,11 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
         pendente = db.obter_pending_action(telefone)
         if pendente:
             try:
-                resultado = executar_pending_action(pendente)
+                resultado = executar_pending_action(telefone, pendente)
                 db.limpar_pending_actions(telefone)
                 contexto = f"Ação confirmada e executada com sucesso: {resultado}. Agradeça e ofereça ajuda adicional."
             except Exception as e:
-                contexto = f"Houve um erro ao executar a ação: {e}. Peça desculpas e sugira tentar de novo."
+                contexto = f"Houve um erro ao executar a ação. Peça desculpas e sugira tentar novamente."
         else:
             contexto = "O usuário disse 'sim' mas não há nenhuma ação pendente. Pergunte o que ele quer fazer."
 
@@ -172,6 +176,14 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
             contexto = "Ação cancelada conforme pedido do usuário. Confirme o cancelamento de forma simpática."
         else:
             contexto = "Não havia nada pendente para cancelar. Pergunte o que o usuário quer fazer."
+
+    # ---------- Saudação ----------
+    elif intencao == "saudacao":
+        contexto = (
+            "O usuário está cumprimentando. Responda de forma breve e amigável e apresente "
+            "as principais funcionalidades disponíveis: registrar contas, gastos, aluguéis, "
+            "consultar resumos financeiros e receber dicas. Seja conciso."
+        )
 
     # ---------- Registros (criam pending action ao invés de salvar direto) ----------
     elif intencao == "registrar_conta":
@@ -290,7 +302,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
 
     # ---------- Consultas (não precisam de confirmação) ----------
     elif intencao == "consultar_contas":
-        contas = db.contas_proximas_vencimento(30)
+        contas = db.contas_proximas_vencimento(telefone, 30)
         if contas:
             lista = "\n".join(
                 f"• {c['descricao']} — {_formatar_valor(c['valor'])} — vence {c['vencimento']}"
@@ -302,8 +314,8 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
 
     elif intencao == "consultar_gastos":
         periodo = dados.get("periodo", "mes")
-        total = db.total_gastos(periodo)
-        gastos = db.listar_gastos(periodo)
+        total = db.total_gastos(telefone, periodo)
+        gastos = db.listar_gastos(telefone, periodo)
         if gastos:
             lista = "\n".join(
                 f"• {g['descricao']} — {_formatar_valor(g['valor'])} ({g.get('categoria', 'sem categoria')})"
@@ -314,7 +326,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
             contexto = f"Nenhum gasto registrado no período ({periodo})."
 
     elif intencao == "consultar_fornecedores":
-        fornecedores = db.listar_fornecedores()
+        fornecedores = db.listar_fornecedores(telefone)
         if fornecedores:
             lista = "\n".join(f"• {f['nome']} ({f.get('categoria', 'sem categoria')})" for f in fornecedores)
             contexto = f"Fornecedores cadastrados:\n{lista}"
@@ -322,7 +334,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
             contexto = "Nenhum fornecedor cadastrado ainda."
 
     elif intencao == "consultar_alugueis":
-        alugueis = db.listar_alugueis()
+        alugueis = db.listar_alugueis(telefone)
         if alugueis:
             lista = "\n".join(
                 f"• {a['imovel']} — {_formatar_valor(a['valor'])} — vence {a['vencimento']} ({a.get('status', '')})"
@@ -334,7 +346,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
 
     elif intencao == "resumo_financeiro":
         periodo = dados.get("periodo", "mes")
-        resumo = db.resumo_financeiro(periodo)
+        resumo = db.resumo_financeiro(telefone, periodo)
         contexto = (
             f"Resumo financeiro ({periodo}):\n"
             f"• Total de gastos: {_formatar_valor(resumo['total_gastos'])} ({resumo['quantidade_gastos']} registros)\n"
@@ -352,7 +364,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
 
     elif intencao == "dica_financeira":
         try:
-            resumo = db.resumo_financeiro("mes")
+            resumo = db.resumo_financeiro(telefone, "mes")
             contexto = (
                 f"Dados do usuário para basear a dica — gastos do mês: "
                 f"{_formatar_valor(resumo['total_gastos'])}, contas pendentes: {resumo['contas_pendentes']}"

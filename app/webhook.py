@@ -134,19 +134,27 @@ async def webhook_evolution(request: Request):
             )
             resposta = formatar_boleto(dados_boleto)
 
-            # Se veio com legenda pedindo para registrar, já registra
-            if texto and any(p in texto.lower() for p in ["registra", "salva", "anota", "adiciona"]):
-                if dados_boleto.valor and dados_boleto.vencimento:
-                    # Converte vencimento DD/MM/AAAA -> AAAA-MM-DD
-                    partes = dados_boleto.vencimento.split("/")
-                    vencimento_iso = f"{partes[2]}-{partes[1]}-{partes[0]}" if len(partes) == 3 else dados_boleto.vencimento
-                    db.criar_conta(
-                        descricao=dados_boleto.descricao or "Boleto",
-                        valor=dados_boleto.valor,
-                        vencimento=vencimento_iso,
-                        fornecedor=dados_boleto.beneficiario,
-                    )
-                    resposta += "\n\n✅ Conta registrada com sucesso!"
+            # Se conseguiu extrair dados suficientes, cria pending_action para confirmação
+            if dados_boleto.valor and dados_boleto.vencimento:
+                partes = dados_boleto.vencimento.split("/")
+                vencimento_iso = f"{partes[2]}-{partes[1]}-{partes[0]}" if len(partes) == 3 else dados_boleto.vencimento
+                db.criar_pending_action(
+                    telefone=telefone,
+                    action_type="criar_conta",
+                    action_data={
+                        "descricao": dados_boleto.descricao or "Boleto",
+                        "valor": dados_boleto.valor,
+                        "vencimento": vencimento_iso,
+                        "fornecedor": dados_boleto.beneficiario,
+                    },
+                    preview=resposta,
+                )
+                resposta += (
+                    "\n\n━━━━━━━━━━━━━━━\n*Posso registrar?*\n\n"
+                    "✅ *SIM* — confirmar (ou reaja com 👍)\n"
+                    "❌ *NÃO* — cancelar (ou reaja com 👎)\n"
+                    "━━━━━━━━━━━━━━━"
+                )
 
             # Salva conversa
             db.salvar_conversa(telefone, f"[IMAGEM] {texto}", resposta)

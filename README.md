@@ -23,6 +23,7 @@ Execute o SQL abaixo no **SQL Editor** do Supabase:
 -- Contas a Pagar
 CREATE TABLE contas_pagar (
     id BIGSERIAL PRIMARY KEY,
+    telefone TEXT NOT NULL,
     descricao TEXT NOT NULL,
     valor DECIMAL(12,2) NOT NULL,
     vencimento DATE NOT NULL,
@@ -35,6 +36,7 @@ CREATE TABLE contas_pagar (
 -- Fornecedores
 CREATE TABLE fornecedores (
     id BIGSERIAL PRIMARY KEY,
+    telefone TEXT NOT NULL,
     nome TEXT NOT NULL,
     contato TEXT,
     categoria TEXT,
@@ -44,6 +46,7 @@ CREATE TABLE fornecedores (
 -- Gastos Pessoais
 CREATE TABLE gastos_pessoais (
     id BIGSERIAL PRIMARY KEY,
+    telefone TEXT NOT NULL,
     descricao TEXT NOT NULL,
     valor DECIMAL(12,2) NOT NULL,
     categoria TEXT,
@@ -54,6 +57,7 @@ CREATE TABLE gastos_pessoais (
 -- Aluguéis
 CREATE TABLE alugueis (
     id BIGSERIAL PRIMARY KEY,
+    telefone TEXT NOT NULL,
     imovel TEXT NOT NULL,
     valor DECIMAL(12,2) NOT NULL,
     vencimento DATE NOT NULL,
@@ -68,6 +72,16 @@ CREATE TABLE conversas (
     telefone TEXT NOT NULL,
     mensagem TEXT NOT NULL,
     resposta TEXT NOT NULL,
+    criado_em TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Ações pendentes (aguardando confirmação do usuário)
+CREATE TABLE pending_actions (
+    id BIGSERIAL PRIMARY KEY,
+    telefone TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    action_data JSONB NOT NULL,
+    preview TEXT DEFAULT '',
     criado_em TIMESTAMPTZ DEFAULT NOW()
 );
 ```
