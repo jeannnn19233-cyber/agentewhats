@@ -15,6 +15,9 @@ load_dotenv()
 router = APIRouter()
 
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "")
+EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "")
+EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "")
 
 
 async def _enviar_resposta(telefone: str, resultado: AgentResponse | str):

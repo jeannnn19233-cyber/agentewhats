@@ -24,10 +24,10 @@ async def _notificar_usuario(telefone: str, contas: list[dict]) -> None:
     """Monta e envia a mensagem de alerta de vencimento para um usuário."""
     usuario = db.obter_ou_criar_usuario(telefone)
     nome = usuario.get("nome")
-    saudacao = f"Oi, {nome}! 👋" if nome else "Olá! 👋"
+    saudacao = f"Oi, {nome}!" if nome else "Olá!"
 
     hoje = date.today()
-    linhas = [f"{saudacao} Lembrete de contas próximas do vencimento:\n"]
+    linhas = [f"{saudacao} Aqui é a *Maria* da Evolution Financeiro. 📋\nLembrete de contas próximas do vencimento:\n"]
 
     for c in contas:
         venc = date.fromisoformat(c["vencimento"])
@@ -42,7 +42,7 @@ async def _notificar_usuario(telefone: str, contas: list[dict]) -> None:
 
     total = sum(c["valor"] for c in contas)
     linhas.append(f"\nTotal: *{_fmt_brl(total)}*")
-    linhas.append("\nResponda qualquer coisa para marcar como pago ou pedir ajuda. 💬")
+    linhas.append("\nPrecisa de ajuda com alguma dessas contas? É só me chamar! 💬")
 
     await enviar_mensagem(telefone, "\n".join(linhas))
     logger.info("[scheduler] alerta enviado para %s (%d contas)", telefone, len(contas))

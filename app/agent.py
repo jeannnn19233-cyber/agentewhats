@@ -1,7 +1,9 @@
 import json
 import logging
 import os
+import re
 from datetime import date
+import httpx
 from openai import OpenAI
 from dotenv import load_dotenv
 from app.prompts import SYSTEM_PROMPT, INTENT_PROMPT
@@ -13,7 +15,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 client = OpenAI()
 MODEL_CLASSIFICACAO = "gpt-4o-mini"   # rápido e barato — usado para classificar intenção
-MODEL_RESPOSTA = "gpt-4o"             # qualidade máxima — usado para gerar a resposta ao usuário
+MODEL_RESPOSTA = "gpt-4o-mini"        # rápido e barato — qualidade excelente para WhatsApp
 
 
 # ============================================================
@@ -28,7 +30,7 @@ def _formatar_historico(historico: list[dict]) -> str:
     for h in historico:
         msg = h.get("mensagem", "").strip()
         resp = h.get("resposta", "").strip()
-        linhas.append(f"Usuário: {msg}\nFinBot: {resp}")
+        linhas.append(f"Usuário: {msg}\nMaria: {resp}")
     return "\n\n".join(linhas)
 
 
@@ -44,18 +46,31 @@ def _formatar_valor(v) -> str:
 # ============================================================
 
 def classificar_intencao(mensagem: str, historico: list[dict],
-                         pending: dict | None = None) -> dict:
-    """Classifica a intenção do usuário usando GPT, com contexto de pending_action."""
+                         pending: dict | None = None,
+                         usuario: dict | None = None) -> dict:
+    """Classifica a intenção do usuário usando GPT, com contexto de pending_action e onboarding."""
     historico_txt = _formatar_historico(historico)
 
-    # Anotar ação pendente no contexto para evitar falhas de classificação
+    # Contexto ativo: onboarding + pending action
+    partes_ctx = []
+    if usuario and not usuario.get("onboarding_completo"):
+        partes_ctx.append(
+            f"ONBOARDING NÃO COMPLETO. Dados atuais do cliente: "
+            f"nome={usuario.get('nome') or '?'}, tipo={usuario.get('tipo') or '?'}, "
+            f"cnpj={usuario.get('cnpj') or 'não informado'}."
+        )
+    else:
+        partes_ctx.append("Onboarding completo.")
+
     if pending:
-        contexto_ativo = (
+        partes_ctx.append(
             f"Há uma ação pendente de confirmação — "
             f"tipo: {pending['action_type']}, dados: {json.dumps(pending['action_data'], ensure_ascii=False)}"
         )
     else:
-        contexto_ativo = "Nenhuma ação pendente no momento."
+        partes_ctx.append("Nenhuma ação pendente no momento.")
+
+    contexto_ativo = " ".join(partes_ctx)
 
     prompt = (
         INTENT_PROMPT
@@ -82,6 +97,28 @@ def classificar_intencao(mensagem: str, historico: list[dict],
     except json.JSONDecodeError:
         logger.warning("Falha ao parsear JSON de classificação. Resposta: %r", texto)
         return {"intencao": "outro", "dados": {}}
+
+
+def consultar_cnpj(cnpj: str) -> dict | None:
+    """Consulta CNPJ na API pública da ReceitaWS. Retorna dados ou None."""
+    cnpj_limpo = re.sub(r'\D', '', cnpj)
+    if len(cnpj_limpo) != 14:
+        return None
+    try:
+        resp = httpx.get(f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("status") != "ERROR":
+                return {
+                    "cnpj": cnpj_limpo,
+                    "razao_social": data.get("nome", ""),
+                    "fantasia": data.get("fantasia", ""),
+                    "situacao": data.get("situacao", ""),
+                    "atividade": data.get("atividade_principal", [{}])[0].get("text", ""),
+                }
+    except Exception:
+        pass
+    return None
 
 
 def _formatar_perfil(usuario: dict) -> str:
@@ -121,7 +158,7 @@ def gerar_resposta(mensagem: str, historico: list[dict],
     response = client.chat.completions.create(
         model=MODEL_RESPOSTA,
         messages=messages,
-        max_tokens=1500,
+        max_tokens=600,
         temperature=0.3,
     )
     return response.choices[0].message.content or "Desculpe, não consegui processar sua mensagem."
@@ -220,9 +257,9 @@ def _criar_pending_e_contexto(telefone: str, action_type: str,
 def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
     """Processa mensagem de texto e retorna AgentResponse (texto e/ou imagem)."""
     usuario = db.obter_ou_criar_usuario(telefone)
-    historico = db.ultimas_conversas(telefone, limit=15)
+    historico = db.ultimas_conversas(telefone, limit=8)
     pending = db.obter_pending_action(telefone)
-    classificacao = classificar_intencao(mensagem, historico, pending)
+    classificacao = classificar_intencao(mensagem, historico, pending, usuario)
     intencao = classificacao.get("intencao", "outro")
     dados = classificacao.get("dados", {}) or {}
     logger.info("[%s] intenção=%s dados=%s", telefone, intencao, dados)
@@ -250,40 +287,130 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
         else:
             contexto = "Não havia nada pendente para cancelar. Pergunte o que o usuário quer fazer."
 
-    # ── Saudação ─────────────────────────────────────────────────────────────
-    elif intencao == "saudacao":
-        contexto = (
-            "O usuário está cumprimentando. Responda de forma breve e amigável. "
-            "Apresente em até 3 linhas as principais funcionalidades: registrar contas, "
-            "gastos e receitas; consultar resumos e fluxo de caixa; gerar gráficos financeiros."
-        )
-
-    # ── Configuração de perfil ───────────────────────────────────────────────
-    elif intencao == "configurar_perfil":
+    # ── Onboarding (cadastro obrigatório) ─────────────────────────────────────
+    elif intencao == "onboarding" or (not usuario.get("onboarding_completo") and intencao not in ("confirmar", "cancelar")):
+        # Trata dados do onboarding que vieram na mensagem
         atualizacoes: dict = {}
-        if dados.get("nome"):
+        if dados.get("nome") and not usuario.get("nome"):
             atualizacoes["nome"] = dados["nome"]
-        if dados.get("tipo") in ("pessoal", "empresarial"):
+        if dados.get("tipo") in ("pessoal", "empresarial") and not usuario.get("tipo"):
             atualizacoes["tipo"] = dados["tipo"]
         if dados.get("orcamento_mensal") is not None:
             atualizacoes["orcamento_mensal"] = float(dados["orcamento_mensal"])
 
+        # Consulta CNPJ se fornecido
+        cnpj_raw = dados.get("cnpj")
+        if cnpj_raw:
+            resultado_cnpj = consultar_cnpj(cnpj_raw)
+            if resultado_cnpj:
+                atualizacoes["cnpj"] = resultado_cnpj["cnpj"]
+                atualizacoes["razao_social"] = resultado_cnpj["razao_social"]
+                contexto = (
+                    f"CNPJ consultado com sucesso na Receita Federal:\n"
+                    f"• Razão Social: {resultado_cnpj['razao_social']}\n"
+                    f"• Nome Fantasia: {resultado_cnpj['fantasia']}\n"
+                    f"• Situação: {resultado_cnpj['situacao']}\n"
+                    f"• Atividade: {resultado_cnpj['atividade']}\n\n"
+                    f"Mostre esses dados ao cliente e pergunte se está correto. "
+                    f"Se sim, finalize o cadastro."
+                )
+            else:
+                contexto = (
+                    "CNPJ não encontrado ou inválido. Informe gentilmente ao cliente "
+                    "que não foi possível localizar esse CNPJ na Receita Federal. "
+                    "Peça para verificar e enviar novamente, ou pular essa etapa."
+                )
+
         if atualizacoes:
             db.atualizar_usuario(telefone, **atualizacoes)
-            usuario = {**usuario, **atualizacoes}  # atualiza em memória para esta resposta
+            usuario = {**usuario, **atualizacoes}
+
+        # Verifica se o onboarding pode ser finalizado
+        tem_nome = bool(usuario.get("nome"))
+        tem_tipo = bool(usuario.get("tipo"))
+
+        if tem_nome and tem_tipo:
+            # Se empresarial e sem CNPJ, ainda pode finalizar (CNPJ é opcional)
+            if not usuario.get("onboarding_completo"):
+                db.atualizar_usuario(telefone, onboarding_completo=True)
+                usuario["onboarding_completo"] = True
+
+            if not contexto:
+                nome = usuario.get("nome", "")
+                tipo_txt = "empresarial" if usuario.get("tipo") == "empresarial" else "pessoal"
+                razao = usuario.get("razao_social")
+                contexto = (
+                    f"Onboarding finalizado com sucesso!\n"
+                    f"• Nome: {nome}\n"
+                    f"• Tipo: {tipo_txt}\n"
+                    + (f"• Empresa: {razao}\n" if razao else "")
+                    + (f"• Orçamento: {_formatar_valor(usuario.get('orcamento_mensal'))}/mês\n" if usuario.get("orcamento_mensal") else "")
+                    + f"\nDê as boas-vindas ao cliente pelo nome, confirme o cadastro e explique rapidamente "
+                    f"o que a Maria sabe fazer (2-3 funcionalidades principais). "
+                    f"Seja calorosa e profissional."
+                )
+        else:
+            if not contexto:
+                # Determina o que falta perguntar
+                faltam = []
+                if not tem_nome:
+                    faltam.append("nome (como o cliente gostaria de ser chamado)")
+                if not tem_tipo:
+                    faltam.append("tipo de uso (pessoal ou empresarial)")
+
+                if not historico:
+                    contexto = (
+                        "Este é o PRIMEIRO contato com o cliente. Faça a apresentação completa da Maria "
+                        "e comece o cadastro. Pergunte: como posso te chamar?"
+                    )
+                else:
+                    contexto = (
+                        f"O onboarding ainda não está completo. Faltam: {', '.join(faltam)}. "
+                        f"Peça o próximo dado faltante de forma gentil. "
+                        f"Se o tipo for empresarial, pergunte também o CNPJ para consulta."
+                    )
+
+    # ── Saudação (cliente já cadastrado) ────────────────────────────────────
+    elif intencao == "saudacao":
+        nome = usuario.get("nome", "")
+        contexto = (
+            f"O cliente {nome} está cumprimentando. Responda de forma calorosa e breve. "
+            f"Use o nome dele. Pergunte como pode ajudar hoje. "
+            f"Não repita a apresentação completa — ele já conhece a Maria."
+        )
+
+    # ── Configuração de perfil (pós-onboarding) ──────────────────────────────
+    elif intencao == "configurar_perfil":
+        atualizacoes_perfil: dict = {}
+        if dados.get("nome"):
+            atualizacoes_perfil["nome"] = dados["nome"]
+        if dados.get("tipo") in ("pessoal", "empresarial"):
+            atualizacoes_perfil["tipo"] = dados["tipo"]
+        if dados.get("orcamento_mensal") is not None:
+            atualizacoes_perfil["orcamento_mensal"] = float(dados["orcamento_mensal"])
+        if dados.get("cnpj"):
+            resultado_cnpj = consultar_cnpj(dados["cnpj"])
+            if resultado_cnpj:
+                atualizacoes_perfil["cnpj"] = resultado_cnpj["cnpj"]
+                atualizacoes_perfil["razao_social"] = resultado_cnpj["razao_social"]
+
+        if atualizacoes_perfil:
+            db.atualizar_usuario(telefone, **atualizacoes_perfil)
+            usuario = {**usuario, **atualizacoes_perfil}
             partes = []
-            if "nome" in atualizacoes:
-                partes.append(f"nome: {atualizacoes['nome']}")
-            if "tipo" in atualizacoes:
-                partes.append(f"tipo: {atualizacoes['tipo']}")
-            if "orcamento_mensal" in atualizacoes:
-                partes.append(f"orçamento: {_formatar_valor(atualizacoes['orcamento_mensal'])}/mês")
-            contexto = f"Perfil atualizado com sucesso — {', '.join(partes)}. Confirme de forma amigável e ofereça ajuda."
+            if "nome" in atualizacoes_perfil:
+                partes.append(f"nome: {atualizacoes_perfil['nome']}")
+            if "tipo" in atualizacoes_perfil:
+                partes.append(f"tipo: {atualizacoes_perfil['tipo']}")
+            if "orcamento_mensal" in atualizacoes_perfil:
+                partes.append(f"orçamento: {_formatar_valor(atualizacoes_perfil['orcamento_mensal'])}/mês")
+            if "razao_social" in atualizacoes_perfil:
+                partes.append(f"empresa: {atualizacoes_perfil['razao_social']}")
+            contexto = f"Perfil atualizado — {', '.join(partes)}. Confirme brevemente."
         else:
             contexto = (
-                "O usuário quer configurar o perfil mas não informou nada. "
-                "Pergunte: (1) como prefere ser chamado, (2) se é uso pessoal ou empresarial, "
-                "(3) se quer definir um orçamento mensal (opcional)."
+                "O cliente quer atualizar o perfil mas não informou o quê. "
+                "Pergunte o que deseja alterar: nome, tipo de uso, orçamento mensal ou CNPJ."
             )
 
     # ── Registros ────────────────────────────────────────────────────────────
