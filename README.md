@@ -75,6 +75,16 @@ CREATE TABLE conversas (
     criado_em TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Perfil dos usuários
+CREATE TABLE usuarios (
+    telefone TEXT PRIMARY KEY,
+    nome TEXT,
+    tipo TEXT DEFAULT 'pessoal',
+    orcamento_mensal DECIMAL(12,2),
+    criado_em TIMESTAMPTZ DEFAULT NOW(),
+    atualizado_em TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Receitas / Entradas
 CREATE TABLE receitas (
     id BIGSERIAL PRIMARY KEY,
@@ -95,6 +105,48 @@ CREATE TABLE pending_actions (
     action_data JSONB NOT NULL,
     preview TEXT DEFAULT '',
     criado_em TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### Migração (banco já existente)
+
+Se você já criou as tabelas antes, rode este SQL para adicionar o que falta:
+
+```sql
+-- Adiciona coluna telefone nas tabelas que não tinham
+ALTER TABLE contas_pagar ADD COLUMN IF NOT EXISTS telefone TEXT NOT NULL DEFAULT '';
+ALTER TABLE fornecedores ADD COLUMN IF NOT EXISTS telefone TEXT NOT NULL DEFAULT '';
+ALTER TABLE gastos_pessoais ADD COLUMN IF NOT EXISTS telefone TEXT NOT NULL DEFAULT '';
+ALTER TABLE alugueis ADD COLUMN IF NOT EXISTS telefone TEXT NOT NULL DEFAULT '';
+
+-- Tabelas novas
+CREATE TABLE IF NOT EXISTS pending_actions (
+    id BIGSERIAL PRIMARY KEY,
+    telefone TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    action_data JSONB NOT NULL,
+    preview TEXT DEFAULT '',
+    criado_em TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS receitas (
+    id BIGSERIAL PRIMARY KEY,
+    telefone TEXT NOT NULL,
+    descricao TEXT NOT NULL,
+    valor DECIMAL(12,2) NOT NULL,
+    categoria TEXT,
+    data DATE NOT NULL DEFAULT CURRENT_DATE,
+    criado_em TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS receitas_telefone_data ON receitas (telefone, data);
+
+CREATE TABLE IF NOT EXISTS usuarios (
+    telefone TEXT PRIMARY KEY,
+    nome TEXT,
+    tipo TEXT DEFAULT 'pessoal',
+    orcamento_mensal DECIMAL(12,2),
+    criado_em TIMESTAMPTZ DEFAULT NOW(),
+    atualizado_em TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 

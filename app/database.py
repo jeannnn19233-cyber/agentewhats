@@ -215,6 +215,36 @@ def limpar_pending_actions(telefone: str) -> None:
     supabase.table("pending_actions").delete().eq("telefone", telefone).execute()
 
 
+# ===================== USUÁRIOS =====================
+
+def obter_ou_criar_usuario(telefone: str) -> dict:
+    """Retorna o perfil do usuário, criando-o se for a primeira mensagem."""
+    result = (
+        supabase.table("usuarios")
+        .select("*")
+        .eq("telefone", telefone)
+        .limit(1)
+        .execute()
+    )
+    if result.data:
+        return result.data[0]
+    # Primeiro acesso: cria registro mínimo
+    novo = supabase.table("usuarios").insert({"telefone": telefone}).execute()
+    return novo.data[0] if novo.data else {"telefone": telefone}
+
+
+def atualizar_usuario(telefone: str, **campos) -> dict:
+    """Atualiza campos do perfil do usuário (nome, tipo, orcamento_mensal)."""
+    campos["atualizado_em"] = date.today().isoformat()
+    result = (
+        supabase.table("usuarios")
+        .update(campos)
+        .eq("telefone", telefone)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
 # ===================== RECEITAS =====================
 
 def criar_receita(telefone: str, descricao: str, valor: float,

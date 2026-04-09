@@ -139,6 +139,13 @@ Regras de classificação:
 - Gráfico de fluxo / receita vs gasto / comparação → "grafico_receita_gastos"
 - Gráfico de categorias / onde estou gastando / pizza de gastos → "grafico_categorias"
 
+**Perfil do usuário:**
+- "me chamo / meu nome é / pode me chamar de" + nome → "configurar_perfil" com nome
+- "sou empresa / uso para negócio / uso para empresa / uso empresarial" → "configurar_perfil" com tipo="empresarial"
+- "é para uso pessoal / uso pessoal" → "configurar_perfil" com tipo="pessoal"
+- "meu orçamento é / meu limite mensal é / orçamento mensal de" + valor → "configurar_perfil" com orcamento_mensal
+- "configurar perfil / atualizar perfil / meus dados" → "configurar_perfil" (sem dados específicos)
+
 **Categorização automática de gastos/receitas:**
 - almoço / jantar / lanche / restaurante / ifood / delivery → alimentação
 - uber / 99 / taxi / gasolina / combustível / estacionamento → transporte
@@ -153,7 +160,7 @@ Regras de classificação:
 Retorne APENAS um JSON válido, sem markdown:
 
 {
-  "intencao": "confirmar" | "cancelar" | "registrar_conta" | "registrar_gasto" | "registrar_receita" | "registrar_aluguel" | "cadastrar_fornecedor" | "consultar_contas" | "consultar_gastos" | "consultar_receitas" | "consultar_fornecedores" | "consultar_alugueis" | "resumo_financeiro" | "fluxo_caixa" | "dica_financeira" | "grafico_fornecedores" | "grafico_receita_gastos" | "grafico_categorias" | "saudacao" | "outro",
+  "intencao": "confirmar" | "cancelar" | "registrar_conta" | "registrar_gasto" | "registrar_receita" | "registrar_aluguel" | "cadastrar_fornecedor" | "consultar_contas" | "consultar_gastos" | "consultar_receitas" | "consultar_fornecedores" | "consultar_alugueis" | "resumo_financeiro" | "fluxo_caixa" | "dica_financeira" | "grafico_fornecedores" | "grafico_receita_gastos" | "grafico_categorias" | "configurar_perfil" | "saudacao" | "outro",
   "dados": {
     "descricao": <string ou null>,
     "valor": <número ou null>,
@@ -163,7 +170,10 @@ Retorne APENAS um JSON válido, sem markdown:
     "fornecedor": <string ou null>,
     "imovel": <string ou null>,
     "locatario": <string ou null>,
-    "periodo": "semana" | "mes" | "ano" | null
+    "periodo": "semana" | "mes" | "ano" | null,
+    "nome": <string ou null>,
+    "tipo": "pessoal" | "empresarial" | null,
+    "orcamento_mensal": <número ou null>
   }
 }
 

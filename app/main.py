@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -13,10 +14,24 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.scheduler import scheduler
+    scheduler.start()
+    logger.info("Scheduler iniciado — alertas de vencimento às 8h (Brasília)")
+    yield
+    scheduler.shutdown(wait=False)
+    logger.info("Scheduler encerrado")
+
+
 app = FastAPI(
     title="Agente Financeiro",
     description="Agente de IA para finanças pessoais e empresariais via WhatsApp",
-    version="1.0.0",
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 # Webhook é server-to-server — CORS restrito à URL da Evolution API
@@ -38,7 +53,7 @@ def root():
     return {
         "app": "Agente Financeiro",
         "status": "online",
-        "version": "1.0.0",
+        "version": "2.0.0",
     }
 
 

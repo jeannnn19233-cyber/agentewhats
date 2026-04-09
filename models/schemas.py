@@ -84,6 +84,17 @@ class WebhookMessage(BaseModel):
     event: Optional[str] = None
 
 
+# --- Perfil do usuário ---
+
+class UsuarioPerfil(BaseModel):
+    telefone: str
+    nome: Optional[str] = None
+    tipo: str = "pessoal"              # "pessoal" | "empresarial"
+    orcamento_mensal: Optional[float] = None
+    criado_em: Optional[datetime] = None
+    atualizado_em: Optional[datetime] = None
+
+
 # --- Receitas ---
 
 class ReceitaCreate(BaseModel):

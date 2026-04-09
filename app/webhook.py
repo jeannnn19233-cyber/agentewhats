@@ -1,11 +1,11 @@
 import logging
 import os
-import httpx
 from fastapi import APIRouter, Request, HTTPException
 from dotenv import load_dotenv
 from app.agent import processar_mensagem
 from app.vision import extrair_dados_boleto, formatar_boleto
 from app import database as db
+from app.evolution import enviar_mensagem, enviar_midia
 from models.schemas import AgentResponse
 
 logger = logging.getLogger(__name__)
@@ -14,35 +14,7 @@ load_dotenv()
 
 router = APIRouter()
 
-EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "")
-EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "")
-EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-
-_HEADERS = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
-
-
-async def enviar_mensagem(telefone: str, texto: str):
-    """Envia mensagem de texto via Evolution API."""
-    url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE}"
-    payload = {"number": telefone, "text": texto}
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, json=payload, headers=_HEADERS)
-        resp.raise_for_status()
-
-
-async def enviar_midia(telefone: str, image_b64: str, caption: str = ""):
-    """Envia imagem (base64 PNG) via Evolution API."""
-    url = f"{EVOLUTION_API_URL}/message/sendMedia/{EVOLUTION_INSTANCE}"
-    payload = {
-        "number": telefone,
-        "mediatype": "image",
-        "media": image_b64,
-        "caption": caption,
-    }
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(url, json=payload, headers=_HEADERS)
-        resp.raise_for_status()
 
 
 async def _enviar_resposta(telefone: str, resultado: AgentResponse | str):

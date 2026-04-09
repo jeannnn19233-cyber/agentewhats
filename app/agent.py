@@ -12,7 +12,8 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 client = OpenAI()
-MODEL = "gpt-4o-mini"
+MODEL_CLASSIFICACAO = "gpt-4o-mini"   # rápido e barato — usado para classificar intenção
+MODEL_RESPOSTA = "gpt-4o"             # qualidade máxima — usado para gerar a resposta ao usuário
 
 
 # ============================================================
@@ -64,7 +65,7 @@ def classificar_intencao(mensagem: str, historico: list[dict],
     )
 
     response = client.chat.completions.create(
-        model=MODEL,
+        model=MODEL_CLASSIFICACAO,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=400,
         temperature=0,
@@ -83,9 +84,26 @@ def classificar_intencao(mensagem: str, historico: list[dict],
         return {"intencao": "outro", "dados": {}}
 
 
-def gerar_resposta(mensagem: str, historico: list[dict], contexto: str = "") -> str:
+def _formatar_perfil(usuario: dict) -> str:
+    """Formata o perfil do usuário como contexto para o LLM."""
+    partes = []
+    if usuario.get("nome"):
+        partes.append(f"Nome: {usuario['nome']}")
+    partes.append(f"Tipo de uso: {usuario.get('tipo', 'pessoal')}")
+    if usuario.get("orcamento_mensal"):
+        partes.append(f"Orçamento mensal: {_formatar_valor(usuario['orcamento_mensal'])}")
+    return "\n".join(partes)
+
+
+def gerar_resposta(mensagem: str, historico: list[dict],
+                   contexto: str = "", usuario: dict | None = None) -> str:
     """Gera resposta conversacional usando o histórico recente como memória."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if usuario:
+        perfil_txt = _formatar_perfil(usuario)
+        if perfil_txt:
+            messages.append({"role": "system", "content": f"Perfil do usuário:\n{perfil_txt}"})
 
     for h in historico:
         msg = (h.get("mensagem") or "").strip()
@@ -101,7 +119,7 @@ def gerar_resposta(mensagem: str, historico: list[dict], contexto: str = "") -> 
     messages.append({"role": "user", "content": mensagem})
 
     response = client.chat.completions.create(
-        model=MODEL,
+        model=MODEL_RESPOSTA,
         messages=messages,
         max_tokens=1500,
         temperature=0.3,
@@ -201,6 +219,7 @@ def _criar_pending_e_contexto(telefone: str, action_type: str,
 
 def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
     """Processa mensagem de texto e retorna AgentResponse (texto e/ou imagem)."""
+    usuario = db.obter_ou_criar_usuario(telefone)
     historico = db.ultimas_conversas(telefone, limit=15)
     pending = db.obter_pending_action(telefone)
     classificacao = classificar_intencao(mensagem, historico, pending)
@@ -238,6 +257,34 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
             "Apresente em até 3 linhas as principais funcionalidades: registrar contas, "
             "gastos e receitas; consultar resumos e fluxo de caixa; gerar gráficos financeiros."
         )
+
+    # ── Configuração de perfil ───────────────────────────────────────────────
+    elif intencao == "configurar_perfil":
+        atualizacoes: dict = {}
+        if dados.get("nome"):
+            atualizacoes["nome"] = dados["nome"]
+        if dados.get("tipo") in ("pessoal", "empresarial"):
+            atualizacoes["tipo"] = dados["tipo"]
+        if dados.get("orcamento_mensal") is not None:
+            atualizacoes["orcamento_mensal"] = float(dados["orcamento_mensal"])
+
+        if atualizacoes:
+            db.atualizar_usuario(telefone, **atualizacoes)
+            usuario = {**usuario, **atualizacoes}  # atualiza em memória para esta resposta
+            partes = []
+            if "nome" in atualizacoes:
+                partes.append(f"nome: {atualizacoes['nome']}")
+            if "tipo" in atualizacoes:
+                partes.append(f"tipo: {atualizacoes['tipo']}")
+            if "orcamento_mensal" in atualizacoes:
+                partes.append(f"orçamento: {_formatar_valor(atualizacoes['orcamento_mensal'])}/mês")
+            contexto = f"Perfil atualizado com sucesso — {', '.join(partes)}. Confirme de forma amigável e ofereça ajuda."
+        else:
+            contexto = (
+                "O usuário quer configurar o perfil mas não informou nada. "
+                "Pergunte: (1) como prefere ser chamado, (2) se é uso pessoal ou empresarial, "
+                "(3) se quer definir um orçamento mensal (opcional)."
+            )
 
     # ── Registros ────────────────────────────────────────────────────────────
     elif intencao == "registrar_conta":
@@ -409,6 +456,14 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 for c in proximas
             )
             contexto += f"\nContas vencendo nos próximos 7 dias:\n{lista}"
+        if usuario.get("orcamento_mensal"):
+            orc = float(usuario["orcamento_mensal"])
+            pct = (resumo["total_gastos"] / orc * 100) if orc > 0 else 0
+            contexto += f"\nOrçamento mensal: {_formatar_valor(orc)} — utilizado: {pct:.1f}%"
+            if pct > 90:
+                contexto += " ⚠️ ALERTA: acima de 90% do orçamento!"
+            elif pct > 75:
+                contexto += " — atenção, acima de 75%"
 
     elif intencao == "dica_financeira":
         try:
@@ -471,7 +526,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 contexto = "Erro ao gerar o gráfico. Peça desculpas e sugira tentar novamente."
 
     # ── Gera resposta de texto ────────────────────────────────────────────────
-    resposta = gerar_resposta(mensagem, historico, contexto)
+    resposta = gerar_resposta(mensagem, historico, contexto, usuario=usuario)
 
     try:
         db.salvar_conversa(telefone, mensagem, resposta)
