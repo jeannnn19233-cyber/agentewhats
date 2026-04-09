@@ -75,6 +75,18 @@ CREATE TABLE conversas (
     criado_em TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Receitas / Entradas
+CREATE TABLE receitas (
+    id BIGSERIAL PRIMARY KEY,
+    telefone TEXT NOT NULL,
+    descricao TEXT NOT NULL,
+    valor DECIMAL(12,2) NOT NULL,
+    categoria TEXT,
+    data DATE NOT NULL DEFAULT CURRENT_DATE,
+    criado_em TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX ON receitas (telefone, data);
+
 -- Ações pendentes (aguardando confirmação do usuário)
 CREATE TABLE pending_actions (
     id BIGSERIAL PRIMARY KEY,

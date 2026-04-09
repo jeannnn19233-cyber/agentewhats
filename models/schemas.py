@@ -1,6 +1,15 @@
+from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
 from datetime import date, datetime
 from typing import Optional
+
+
+@dataclass
+class AgentResponse:
+    """Resposta do agente — pode ser só texto, só imagem, ou os dois."""
+    text: str
+    image_b64: str | None = None   # PNG em base64 pronto para enviar
+    image_caption: str = ""        # legenda exibida abaixo da imagem no WhatsApp
 
 
 # --- Contas a Pagar ---
@@ -73,6 +82,15 @@ class WebhookMessage(BaseModel):
     instance: Optional[str] = None
     data: Optional[dict] = None
     event: Optional[str] = None
+
+
+# --- Receitas ---
+
+class ReceitaCreate(BaseModel):
+    descricao: str
+    valor: float = Field(gt=0)
+    data: date
+    categoria: Optional[str] = None
 
 
 # --- Dados extraídos de boleto ---

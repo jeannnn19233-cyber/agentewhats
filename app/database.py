@@ -215,6 +215,57 @@ def limpar_pending_actions(telefone: str) -> None:
     supabase.table("pending_actions").delete().eq("telefone", telefone).execute()
 
 
+# ===================== RECEITAS =====================
+
+def criar_receita(telefone: str, descricao: str, valor: float,
+                  data_receita: str, categoria: str | None = None) -> dict:
+    data = {
+        "telefone": telefone,
+        "descricao": descricao,
+        "valor": valor,
+        "data": data_receita,
+    }
+    if categoria:
+        data["categoria"] = categoria
+    result = supabase.table("receitas").insert(data).execute()
+    return result.data[0] if result.data else {}
+
+
+def listar_receitas(telefone: str, periodo: str = "mes") -> list[dict]:
+    hoje = date.today()
+    if periodo == "semana":
+        inicio = (hoje - timedelta(days=hoje.weekday())).isoformat()
+    elif periodo == "ano":
+        inicio = date(hoje.year, 1, 1).isoformat()
+    else:  # mes
+        inicio = date(hoje.year, hoje.month, 1).isoformat()
+
+    result = (
+        supabase.table("receitas")
+        .select("*")
+        .eq("telefone", telefone)
+        .gte("data", inicio)
+        .order("data", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+def total_receitas(telefone: str, periodo: str = "mes") -> float:
+    return sum(r["valor"] for r in listar_receitas(telefone, periodo))
+
+
+def fluxo_caixa(telefone: str, periodo: str = "mes") -> dict:
+    total_r = total_receitas(telefone, periodo)
+    total_g = total_gastos(telefone, periodo)
+    return {
+        "receitas": total_r,
+        "gastos": total_g,
+        "saldo": total_r - total_g,
+        "periodo": periodo,
+    }
+
+
 # ===================== RESUMO FINANCEIRO =====================
 
 def resumo_financeiro(telefone: str, periodo: str = "mes") -> dict:
