@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from datetime import date
 from openai import OpenAI
@@ -8,6 +9,7 @@ from app import database as db
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
 client = OpenAI()
 MODEL = "gpt-4o-mini"
 
@@ -61,6 +63,7 @@ def classificar_intencao(mensagem: str, historico: list[dict]) -> dict:
     try:
         return json.loads(texto)
     except json.JSONDecodeError:
+        logger.warning("Falha ao parsear JSON de classificação de intenção. Resposta recebida: %r", texto)
         return {"intencao": "outro", "dados": {}}
 
 
@@ -153,6 +156,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
     classificacao = classificar_intencao(mensagem, historico)
     intencao = classificacao.get("intencao", "outro")
     dados = classificacao.get("dados", {}) or {}
+    logger.info("[%s] intenção=%s dados=%s", telefone, intencao, dados)
 
     contexto = ""
 
@@ -163,8 +167,10 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
             try:
                 resultado = executar_pending_action(telefone, pendente)
                 db.limpar_pending_actions(telefone)
+                logger.info("[%s] ação executada: %s", telefone, resultado)
                 contexto = f"Ação confirmada e executada com sucesso: {resultado}. Agradeça e ofereça ajuda adicional."
             except Exception as e:
+                logger.error("[%s] erro ao executar pending_action: %s", telefone, e, exc_info=True)
                 contexto = f"Houve um erro ao executar a ação. Peça desculpas e sugira tentar novamente."
         else:
             contexto = "O usuário disse 'sim' mas não há nenhuma ação pendente. Pergunte o que ele quer fazer."
@@ -378,7 +384,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> str:
     # Salva a conversa (vira histórico para a próxima)
     try:
         db.salvar_conversa(telefone, mensagem, resposta)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("[%s] erro ao salvar conversa: %s", telefone, e, exc_info=True)
 
     return resposta
