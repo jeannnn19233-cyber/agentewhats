@@ -164,8 +164,8 @@ def gerar_resposta(mensagem: str, historico: list[dict],
     response = client.chat.completions.create(
         model=MODEL_RESPOSTA,
         messages=messages,
-        max_tokens=600,
-        temperature=0.3,
+        max_tokens=800,
+        temperature=0.4,
     )
     return response.choices[0].message.content or "Desculpe, não consegui processar sua mensagem."
 
@@ -229,6 +229,30 @@ def executar_pending_action(telefone: str, action: dict) -> str:
         )
         return f"Fornecedor cadastrado: {dados['nome']}"
 
+    if tipo == "apagar_gasto":
+        db.apagar_gasto(telefone, int(dados["id"]))
+        return f"Gasto apagado: {dados.get('descricao', '')}"
+
+    if tipo == "apagar_conta":
+        db.apagar_conta(telefone, int(dados["id"]))
+        return f"Conta apagada: {dados.get('descricao', '')}"
+
+    if tipo == "apagar_receita":
+        db.apagar_receita(telefone, int(dados["id"]))
+        return f"Receita apagada: {dados.get('descricao', '')}"
+
+    if tipo == "apagar_fornecedor":
+        db.apagar_fornecedor(telefone, int(dados["id"]))
+        return f"Fornecedor apagado: {dados.get('nome', '')}"
+
+    if tipo == "marcar_pago":
+        db.marcar_conta_paga(telefone, int(dados["id"]))
+        return f"Conta marcada como paga: {dados.get('descricao', '')}"
+
+    if tipo == "resetar_conta":
+        db.resetar_usuario(telefone)
+        return "Conta resetada — todos os dados foram apagados"
+
     return "Ação executada."
 
 
@@ -244,14 +268,24 @@ _CONFIRMACAO = (
 )
 
 
+_ALERTA_VALOR_ALTO = 1500.0  # Confirmação especial acima deste valor
+
 def _criar_pending_e_contexto(telefone: str, action_type: str,
                                action_data: dict, preview: str,
                                verbo: str = "registrar") -> str:
+    valor = action_data.get("valor")
+    alerta_alto = ""
+    if valor is not None and float(valor) > _ALERTA_VALOR_ALTO:
+        alerta_alto = (
+            f"\n\n⚠️ *ATENÇÃO: valor acima de {_formatar_valor(_ALERTA_VALOR_ALTO)}!* "
+            f"Confirme com cuidado."
+        )
     db.criar_pending_action(telefone=telefone, action_type=action_type,
                             action_data=action_data, preview=preview)
     return (
         f"NÃO foi salvo ainda — aguardando confirmação. "
         f"Mostre EXATAMENTE este preview e pergunte se pode {verbo}:\n\n{preview}"
+        f"{alerta_alto}"
         f"\n\nTermine com a pergunta de confirmação no formato EXATO:{_CONFIRMACAO}"
     )
 
@@ -744,6 +778,130 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
             }, preview, verbo="cadastrar")
         else:
             contexto = "O usuário quer cadastrar um fornecedor mas não informou o nome. Pergunte nome e categoria de uma vez."
+
+    # ── Exclusões ────────────────────────────────────────────────────────────
+    elif intencao == "apagar_gasto":
+        gastos = db.listar_gastos(telefone, "mes")
+        if not gastos:
+            contexto = "O cliente quer apagar um gasto, mas não há gastos registrados este mês."
+        else:
+            lista = "\n".join(
+                f"  {i+1}. {g['descricao']} — {_formatar_valor(g['valor'])} ({g.get('data', '')})"
+                for i, g in enumerate(gastos[:10])
+            )
+            # Tenta match por descrição
+            desc = (dados.get("descricao") or "").lower()
+            match = next((g for g in gastos if desc and desc in g.get("descricao", "").lower()), None)
+            if match:
+                preview = f"🗑️ *APAGAR GASTO*\n• {match['descricao']} — {_formatar_valor(match['valor'])}"
+                contexto = _criar_pending_e_contexto(telefone, "apagar_gasto",
+                    {"id": match["id"], "descricao": match["descricao"], "valor": match["valor"]},
+                    preview, verbo="apagar")
+            else:
+                contexto = (
+                    f"Gastos recentes:\n{lista}\n\n"
+                    "Pergunte qual desses o cliente quer apagar (pelo número ou descrição)."
+                )
+
+    elif intencao == "apagar_conta":
+        contas = db.listar_contas(telefone, status="pendente")
+        if not contas:
+            contexto = "O cliente quer apagar uma conta, mas não há contas pendentes."
+        else:
+            lista = "\n".join(
+                f"  {i+1}. {c['descricao']} — {_formatar_valor(c['valor'])} — vence {c['vencimento']}"
+                for i, c in enumerate(contas[:10])
+            )
+            desc = (dados.get("descricao") or "").lower()
+            match = next((c for c in contas if desc and desc in c.get("descricao", "").lower()), None)
+            if match:
+                preview = f"🗑️ *APAGAR CONTA*\n• {match['descricao']} — {_formatar_valor(match['valor'])}"
+                contexto = _criar_pending_e_contexto(telefone, "apagar_conta",
+                    {"id": match["id"], "descricao": match["descricao"], "valor": match["valor"]},
+                    preview, verbo="apagar")
+            else:
+                contexto = (
+                    f"Contas pendentes:\n{lista}\n\n"
+                    "Pergunte qual o cliente quer apagar."
+                )
+
+    elif intencao == "apagar_receita":
+        receitas = db.listar_receitas(telefone, "mes")
+        if not receitas:
+            contexto = "O cliente quer apagar uma receita, mas não há receitas registradas este mês."
+        else:
+            lista = "\n".join(
+                f"  {i+1}. {r['descricao']} — {_formatar_valor(r['valor'])}"
+                for i, r in enumerate(receitas[:10])
+            )
+            desc = (dados.get("descricao") or "").lower()
+            match = next((r for r in receitas if desc and desc in r.get("descricao", "").lower()), None)
+            if match:
+                preview = f"🗑️ *APAGAR RECEITA*\n• {match['descricao']} — {_formatar_valor(match['valor'])}"
+                contexto = _criar_pending_e_contexto(telefone, "apagar_receita",
+                    {"id": match["id"], "descricao": match["descricao"], "valor": match["valor"]},
+                    preview, verbo="apagar")
+            else:
+                contexto = (
+                    f"Receitas recentes:\n{lista}\n\n"
+                    "Pergunte qual o cliente quer apagar."
+                )
+
+    elif intencao == "apagar_fornecedor":
+        fornecedores = db.listar_fornecedores(telefone)
+        if not fornecedores:
+            contexto = "O cliente quer apagar um fornecedor, mas não há fornecedores cadastrados."
+        else:
+            lista = "\n".join(
+                f"  {i+1}. {f['nome']}"
+                for i, f in enumerate(fornecedores[:10])
+            )
+            nome = (dados.get("fornecedor") or dados.get("descricao") or "").lower()
+            match = next((f for f in fornecedores if nome and nome in f.get("nome", "").lower()), None)
+            if match:
+                preview = f"🗑️ *APAGAR FORNECEDOR*\n• {match['nome']}"
+                contexto = _criar_pending_e_contexto(telefone, "apagar_fornecedor",
+                    {"id": match["id"], "nome": match["nome"]},
+                    preview, verbo="apagar")
+            else:
+                contexto = (
+                    f"Fornecedores:\n{lista}\n\n"
+                    "Pergunte qual o cliente quer apagar."
+                )
+
+    elif intencao == "marcar_pago":
+        contas = db.listar_contas(telefone, status="pendente")
+        if not contas:
+            contexto = "Não há contas pendentes para marcar como paga."
+        else:
+            lista = "\n".join(
+                f"  {i+1}. {c['descricao']} — {_formatar_valor(c['valor'])} — vence {c['vencimento']}"
+                for i, c in enumerate(contas[:10])
+            )
+            desc = (dados.get("descricao") or "").lower()
+            match = next((c for c in contas if desc and desc in c.get("descricao", "").lower()), None)
+            if match:
+                preview = f"✅ *MARCAR COMO PAGA*\n• {match['descricao']} — {_formatar_valor(match['valor'])}"
+                contexto = _criar_pending_e_contexto(telefone, "marcar_pago",
+                    {"id": match["id"], "descricao": match["descricao"], "valor": match["valor"]},
+                    preview, verbo="marcar como paga")
+            else:
+                contexto = (
+                    f"Contas pendentes:\n{lista}\n\n"
+                    "Pergunte qual conta o cliente já pagou."
+                )
+
+    elif intencao == "resetar_conta":
+        preview = (
+            "⚠️ *ATENÇÃO — RESETAR CONTA*\n\n"
+            "Isso vai apagar TODOS os seus dados:\n"
+            "• Contas, gastos, receitas\n"
+            "• Fornecedores, aluguéis\n"
+            "• Histórico de conversas\n"
+            "• Seu perfil será zerado\n\n"
+            "*Essa ação é IRREVERSÍVEL!*"
+        )
+        contexto = _criar_pending_e_contexto(telefone, "resetar_conta", {}, preview, verbo="resetar")
 
     # ── Consultas ────────────────────────────────────────────────────────────
     elif intencao == "consultar_contas":

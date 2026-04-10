@@ -66,6 +66,17 @@ def marcar_conta_paga(telefone: str, conta_id: int) -> dict:
     return result.data[0] if result.data else {}
 
 
+def apagar_conta(telefone: str, conta_id: int) -> bool:
+    result = (
+        supabase.table("contas_pagar")
+        .delete()
+        .eq("id", conta_id)
+        .eq("telefone", telefone)
+        .execute()
+    )
+    return bool(result.data)
+
+
 # ===================== FORNECEDORES =====================
 
 def criar_fornecedor(telefone: str, nome: str, contato: str | None = None,
@@ -83,6 +94,17 @@ def criar_fornecedor(telefone: str, nome: str, contato: str | None = None,
 def listar_fornecedores(telefone: str) -> list[dict]:
     result = supabase.table("fornecedores").select("*").eq("telefone", telefone).order("nome").execute()
     return result.data or []
+
+
+def apagar_fornecedor(telefone: str, fornecedor_id: int) -> bool:
+    result = (
+        supabase.table("fornecedores")
+        .delete()
+        .eq("id", fornecedor_id)
+        .eq("telefone", telefone)
+        .execute()
+    )
+    return bool(result.data)
 
 
 # ===================== GASTOS PESSOAIS =====================
@@ -125,6 +147,17 @@ def listar_gastos(telefone: str, periodo: str = "mes") -> list[dict]:
 def total_gastos(telefone: str, periodo: str = "mes") -> float:
     gastos = listar_gastos(telefone, periodo)
     return sum(g["valor"] for g in gastos)
+
+
+def apagar_gasto(telefone: str, gasto_id: int) -> bool:
+    result = (
+        supabase.table("gastos_pessoais")
+        .delete()
+        .eq("id", gasto_id)
+        .eq("telefone", telefone)
+        .execute()
+    )
+    return bool(result.data)
 
 
 # ===================== ALUGUÉIS =====================
@@ -285,6 +318,17 @@ def total_receitas(telefone: str, periodo: str = "mes") -> float:
     return sum(r["valor"] for r in listar_receitas(telefone, periodo))
 
 
+def apagar_receita(telefone: str, receita_id: int) -> bool:
+    result = (
+        supabase.table("receitas")
+        .delete()
+        .eq("id", receita_id)
+        .eq("telefone", telefone)
+        .execute()
+    )
+    return bool(result.data)
+
+
 def fluxo_caixa(telefone: str, periodo: str = "mes") -> dict:
     total_r = total_receitas(telefone, periodo)
     total_g = total_gastos(telefone, periodo)
@@ -324,3 +368,24 @@ def resumo_financeiro(telefone: str, periodo: str = "mes") -> dict:
         "total_alugueis_pendentes": total_alugueis,
         "proximas_vencimento": contas_proximas_vencimento(telefone, 7),
     }
+
+
+# ===================== RESET DE CONTA =====================
+
+def resetar_usuario(telefone: str) -> None:
+    """Apaga TODOS os dados do usuário e recria perfil zerado."""
+    for tabela in ("contas_pagar", "gastos_pessoais", "receitas",
+                   "fornecedores", "alugueis", "conversas", "pending_actions"):
+        supabase.table(tabela).delete().eq("telefone", telefone).execute()
+    # Reseta perfil mantendo apenas o telefone
+    supabase.table("usuarios").update({
+        "nome": None,
+        "tipo": None,
+        "onboarding_completo": False,
+        "orcamento_mensal": None,
+        "faixa_salarial": None,
+        "faturamento": None,
+        "cnpj": None,
+        "razao_social": None,
+        "atualizado_em": date.today().isoformat(),
+    }).eq("telefone", telefone).execute()
