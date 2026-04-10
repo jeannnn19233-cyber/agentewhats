@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from app.agent import processar_mensagem
 from app.vision import extrair_dados_boleto, formatar_boleto
 from app import database as db
-from app.evolution import enviar_mensagem, enviar_midia
+from app.evolution import enviar_mensagem, enviar_midia, enviar_botoes
 from models.schemas import AgentResponse
 
 logger = logging.getLogger(__name__)
@@ -21,14 +21,18 @@ EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "")
 
 
 async def _enviar_resposta(telefone: str, resultado: AgentResponse | str):
-    """Despacha texto, imagem ou os dois conforme o tipo de resposta."""
+    """Despacha texto, imagem, botões ou combinação conforme o tipo de resposta."""
     if isinstance(resultado, str):
         await enviar_mensagem(telefone, resultado)
         return
 
     if resultado.image_b64:
         await enviar_midia(telefone, resultado.image_b64, resultado.image_caption)
-    if resultado.text:
+
+    # Se há botões, envia via sendButtons (com fallback automático para texto)
+    if resultado.buttons and resultado.text:
+        await enviar_botoes(telefone, resultado.text, resultado.buttons)
+    elif resultado.text:
         await enviar_mensagem(telefone, resultado.text)
 
 
@@ -48,9 +52,10 @@ EMOJIS_NAO = {"👎", "👎🏻", "👎🏼", "👎🏽", "👎🏾", "👎🏿"
 
 
 def extrair_texto(data: dict) -> str:
-    """Extrai texto da mensagem (inclusive reactions emoji)."""
+    """Extrai texto da mensagem (inclusive reactions, respostas de botões e listas)."""
     message = data.get("message", {})
 
+    # Reação com emoji
     if "reactionMessage" in message:
         emoji = (message["reactionMessage"] or {}).get("text", "")
         if not emoji:
@@ -60,6 +65,20 @@ def extrair_texto(data: dict) -> str:
         if emoji in EMOJIS_NAO:
             return "não"
         return ""
+
+    # Resposta de botão (WhatsApp Business)
+    if "buttonsResponseMessage" in message:
+        btn = message["buttonsResponseMessage"] or {}
+        return btn.get("selectedDisplayText") or btn.get("selectedButtonId") or ""
+
+    if "templateButtonReplyMessage" in message:
+        btn = message["templateButtonReplyMessage"] or {}
+        return btn.get("selectedDisplayText") or btn.get("selectedId") or ""
+
+    # Resposta de lista
+    if "listResponseMessage" in message:
+        lr = message["listResponseMessage"] or {}
+        return lr.get("title") or lr.get("singleSelectReply", {}).get("selectedRowId") or ""
 
     if "conversation" in message:
         return message["conversation"]

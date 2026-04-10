@@ -127,6 +127,12 @@ def _formatar_perfil(usuario: dict) -> str:
     if usuario.get("nome"):
         partes.append(f"Nome: {usuario['nome']}")
     partes.append(f"Tipo de uso: {usuario.get('tipo', 'pessoal')}")
+    if usuario.get("razao_social"):
+        partes.append(f"Empresa: {usuario['razao_social']}")
+    if usuario.get("faixa_salarial"):
+        partes.append(f"Faixa salarial: {usuario['faixa_salarial']}")
+    if usuario.get("faturamento"):
+        partes.append(f"Faturamento mensal: {usuario['faturamento']}")
     if usuario.get("orcamento_mensal"):
         partes.append(f"Orçamento mensal: {_formatar_valor(usuario['orcamento_mensal'])}")
     return "\n".join(partes)
@@ -251,6 +257,306 @@ def _criar_pending_e_contexto(telefone: str, action_type: str,
 
 
 # ============================================================
+# Onboarding determinístico (sem LLM para o fluxo principal)
+# ============================================================
+
+_FAIXAS_SALARIAIS = [
+    "Até R$ 3.000",
+    "R$ 3.000 – R$ 7.000",
+    "R$ 7.000 – R$ 15.000",
+    "Acima de R$ 15.000",
+]
+
+_FAIXAS_FATURAMENTO = [
+    "Até R$ 50 mil/mês",
+    "R$ 50 mil – R$ 200 mil/mês",
+    "R$ 200 mil – R$ 1 milhão/mês",
+    "Acima de R$ 1 milhão/mês",
+]
+
+_ONBOARDING_WELCOME = (
+    "Olá! Sou a *Maria*, sua assistente financeira inteligente da "
+    "*Evolution Financeiro*. 💼\n\n"
+    "Vou te ajudar a organizar suas finanças de forma simples e "
+    "eficiente — tudo aqui pelo WhatsApp.\n\n"
+    "Para começar, me diz: você vai usar a ferramenta para *uso pessoal* "
+    "ou para sua *empresa*?"
+)
+
+
+def _detectar_tipo(msg: str) -> str | None:
+    """Detecta se a mensagem indica pessoal ou empresarial."""
+    m = msg.lower().strip()
+    pessoal_kw = ("pessoal", "pessoa", "pra mim", "uso pessoal", "pessoa física", "pf")
+    empresa_kw = ("empresa", "empresarial", "negócio", "negocio", "pj",
+                  "pessoa jurídica", "pessoa juridica", "cnpj", "minha empresa")
+    for kw in empresa_kw:
+        if kw in m:
+            return "empresarial"
+    for kw in pessoal_kw:
+        if kw in m:
+            return "pessoal"
+    # Resposta de botão exata
+    if m in ("1", "uso pessoal"):
+        return "pessoal"
+    if m in ("2", "uso empresarial", "empresa"):
+        return "empresarial"
+    return None
+
+
+def _detectar_faixa(msg: str, faixas: list[str]) -> str | None:
+    """Detecta faixa salarial/faturamento por número ou texto."""
+    m = msg.strip()
+    if m.isdigit() and 1 <= int(m) <= len(faixas):
+        return faixas[int(m) - 1]
+    ml = m.lower()
+    for f in faixas:
+        if f.lower() in ml or ml in f.lower():
+            return f
+    return None
+
+
+def _extrair_nome(msg: str) -> str | None:
+    """Extrai nome de uma mensagem curta (heurística simples)."""
+    m = msg.strip()
+    # Remove prefixos comuns
+    for prefix in ("meu nome é", "me chamo", "pode me chamar de", "sou o", "sou a",
+                   "é", "nome:", "me chame de"):
+        if m.lower().startswith(prefix):
+            m = m[len(prefix):].strip()
+    # Nome deve ter 2-60 chars, sem números
+    if 2 <= len(m) <= 60 and not any(c.isdigit() for c in m):
+        return m.title()
+    return None
+
+
+def _processar_onboarding(
+    telefone: str, mensagem: str,
+    usuario: dict, historico: list[dict], dados: dict
+) -> AgentResponse:
+    """Onboarding determinístico — fluxo sem LLM, profissional e rápido."""
+
+    # === ETAPA 1: Primeiro contato — mostrar boas-vindas + botões tipo ===
+    if not historico and not usuario.get("tipo"):
+        db.salvar_conversa(telefone, mensagem, _ONBOARDING_WELCOME)
+        return AgentResponse(
+            text=_ONBOARDING_WELCOME,
+            buttons=[
+                {"id": "tipo_pessoal", "text": "Uso Pessoal"},
+                {"id": "tipo_empresarial", "text": "Uso Empresarial"},
+            ],
+        )
+
+    # === ETAPA 2: Detectar tipo (pessoal/empresarial) ===
+    if not usuario.get("tipo"):
+        tipo = _detectar_tipo(mensagem)
+        if not tipo:
+            # Tentar via dados do classificador
+            tipo = dados.get("tipo")
+        if tipo in ("pessoal", "empresarial"):
+            db.atualizar_usuario(telefone, tipo=tipo)
+            usuario["tipo"] = tipo
+        else:
+            resp = (
+                "Desculpe, não entendi. Por favor, escolha uma opção:\n\n"
+                "1️⃣ *Uso Pessoal*\n"
+                "2️⃣ *Uso Empresarial*"
+            )
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(
+                text=resp,
+                buttons=[
+                    {"id": "tipo_pessoal", "text": "Uso Pessoal"},
+                    {"id": "tipo_empresarial", "text": "Uso Empresarial"},
+                ],
+            )
+
+    # === FLUXO PESSOAL ===
+    if usuario.get("tipo") == "pessoal":
+        # Pedir nome se não tem
+        if not usuario.get("nome"):
+            nome = _extrair_nome(mensagem) or dados.get("nome")
+            if nome:
+                db.atualizar_usuario(telefone, nome=nome)
+                usuario["nome"] = nome
+            else:
+                resp = (
+                    "Ótimo, *uso pessoal*! 👤\n\n"
+                    "Para personalizar sua experiência, me diz:\n"
+                    "Como posso te chamar?"
+                )
+                db.salvar_conversa(telefone, mensagem, resp)
+                return AgentResponse(text=resp)
+
+        # Pedir faixa salarial se não tem
+        if not usuario.get("faixa_salarial"):
+            faixa = _detectar_faixa(mensagem, _FAIXAS_SALARIAIS)
+            if faixa and usuario.get("nome"):
+                # Nome já veio antes, agora temos a faixa
+                db.atualizar_usuario(telefone, faixa_salarial=faixa, onboarding_completo=True)
+                usuario["faixa_salarial"] = faixa
+                usuario["onboarding_completo"] = True
+            elif usuario.get("nome") and not faixa:
+                # Já tem nome, pede faixa
+                nome = usuario["nome"]
+                resp = (
+                    f"Prazer, *{nome}*! 😊\n\n"
+                    "Para te ajudar melhor, qual sua faixa de renda mensal?\n\n"
+                    "1️⃣ Até R$ 3.000\n"
+                    "2️⃣ R$ 3.000 – R$ 7.000\n"
+                    "3️⃣ R$ 7.000 – R$ 15.000\n"
+                    "4️⃣ Acima de R$ 15.000"
+                )
+                db.salvar_conversa(telefone, mensagem, resp)
+                return AgentResponse(
+                    text=resp,
+                    buttons=[
+                        {"id": "faixa_1", "text": "Até R$ 3.000"},
+                        {"id": "faixa_2", "text": "R$ 3k – R$ 7k"},
+                        {"id": "faixa_3", "text": "R$ 7k – R$ 15k"},
+                    ],
+                )
+            else:
+                # Não conseguiu extrair nada — pede nome novamente
+                resp = "Como posso te chamar? Me diz seu nome 😊"
+                db.salvar_conversa(telefone, mensagem, resp)
+                return AgentResponse(text=resp)
+
+        # Finalizar onboarding pessoal
+        if not usuario.get("onboarding_completo"):
+            db.atualizar_usuario(telefone, onboarding_completo=True)
+            usuario["onboarding_completo"] = True
+
+        nome = usuario.get("nome", "")
+        resp = (
+            f"Perfeito, *{nome}*! Seu cadastro está completo. ✅\n\n"
+            "Agora posso te ajudar com:\n"
+            "📝 Registrar contas a pagar\n"
+            "💸 Controlar gastos e despesas\n"
+            "💰 Registrar receitas\n"
+            "📊 Gerar resumos e gráficos\n"
+            "⏰ Alertas de vencimento diários\n\n"
+            "Como posso te ajudar hoje?"
+        )
+        db.salvar_conversa(telefone, mensagem, resp)
+        return AgentResponse(text=resp)
+
+    # === FLUXO EMPRESARIAL ===
+    if usuario.get("tipo") == "empresarial":
+        # Pedir CNPJ se não tem
+        if not usuario.get("cnpj"):
+            cnpj_raw = dados.get("cnpj") or re.sub(r'\D', '', mensagem)
+            if len(cnpj_raw) == 14:
+                resultado_cnpj = consultar_cnpj(cnpj_raw)
+                if resultado_cnpj:
+                    nome_empresa = resultado_cnpj["fantasia"] or resultado_cnpj["razao_social"]
+                    db.atualizar_usuario(
+                        telefone,
+                        cnpj=resultado_cnpj["cnpj"],
+                        razao_social=resultado_cnpj["razao_social"],
+                        nome=nome_empresa,
+                    )
+                    usuario["cnpj"] = resultado_cnpj["cnpj"]
+                    usuario["razao_social"] = resultado_cnpj["razao_social"]
+                    usuario["nome"] = nome_empresa
+
+                    resp = (
+                        f"Encontrei sua empresa na Receita Federal! ✅\n\n"
+                        f"• *Razão Social:* {resultado_cnpj['razao_social']}\n"
+                        f"• *Nome Fantasia:* {resultado_cnpj['fantasia'] or '—'}\n"
+                        f"• *Situação:* {resultado_cnpj['situacao']}\n"
+                        f"• *Atividade:* {resultado_cnpj['atividade']}\n\n"
+                        "Qual a faixa de faturamento mensal da empresa?\n\n"
+                        "1️⃣ Até R$ 50 mil/mês\n"
+                        "2️⃣ R$ 50 mil – R$ 200 mil/mês\n"
+                        "3️⃣ R$ 200 mil – R$ 1 milhão/mês\n"
+                        "4️⃣ Acima de R$ 1 milhão/mês"
+                    )
+                    db.salvar_conversa(telefone, mensagem, resp)
+                    return AgentResponse(
+                        text=resp,
+                        buttons=[
+                            {"id": "fat_1", "text": "Até R$ 50 mil"},
+                            {"id": "fat_2", "text": "R$ 50k – R$ 200k"},
+                            {"id": "fat_3", "text": "R$ 200k – R$ 1M"},
+                        ],
+                    )
+                else:
+                    resp = (
+                        "Não consegui localizar esse CNPJ na Receita Federal. 😕\n"
+                        "Verifique o número e envie novamente (somente os 14 dígitos)."
+                    )
+                    db.salvar_conversa(telefone, mensagem, resp)
+                    return AgentResponse(text=resp)
+            else:
+                resp = (
+                    "Ótimo, *uso empresarial*! 🏢\n\n"
+                    "Para configurar sua conta, preciso do CNPJ da empresa.\n"
+                    "Envie os *14 dígitos* do CNPJ:"
+                )
+                db.salvar_conversa(telefone, mensagem, resp)
+                return AgentResponse(text=resp)
+
+        # Pedir faturamento se não tem
+        if not usuario.get("faturamento"):
+            faixa = _detectar_faixa(mensagem, _FAIXAS_FATURAMENTO)
+            if faixa:
+                db.atualizar_usuario(telefone, faturamento=faixa, onboarding_completo=True)
+                usuario["faturamento"] = faixa
+                usuario["onboarding_completo"] = True
+            else:
+                resp = (
+                    "Qual a faixa de faturamento mensal da empresa?\n\n"
+                    "1️⃣ Até R$ 50 mil/mês\n"
+                    "2️⃣ R$ 50 mil – R$ 200 mil/mês\n"
+                    "3️⃣ R$ 200 mil – R$ 1 milhão/mês\n"
+                    "4️⃣ Acima de R$ 1 milhão/mês"
+                )
+                db.salvar_conversa(telefone, mensagem, resp)
+                return AgentResponse(
+                    text=resp,
+                    buttons=[
+                        {"id": "fat_1", "text": "Até R$ 50 mil"},
+                        {"id": "fat_2", "text": "R$ 50k – R$ 200k"},
+                        {"id": "fat_3", "text": "R$ 200k – R$ 1M"},
+                    ],
+                )
+
+        # Finalizar onboarding empresarial
+        if not usuario.get("onboarding_completo"):
+            db.atualizar_usuario(telefone, onboarding_completo=True)
+            usuario["onboarding_completo"] = True
+
+        nome = usuario.get("nome") or usuario.get("razao_social", "")
+        resp = (
+            f"Perfeito! Cadastro da *{nome}* concluído. ✅\n\n"
+            "Agora posso te ajudar com:\n"
+            "📝 Contas a pagar e boletos\n"
+            "💸 Controle de despesas\n"
+            "💰 Registro de receitas\n"
+            "🤝 Cadastro de fornecedores\n"
+            "📊 Resumos financeiros e gráficos\n"
+            "⏰ Alertas de vencimento diários\n\n"
+            "Como posso te ajudar hoje?"
+        )
+        db.salvar_conversa(telefone, mensagem, resp)
+        return AgentResponse(text=resp)
+
+    # Fallback — não deveria chegar aqui
+    resp = (
+        "Para começar, me diz: você vai usar para *uso pessoal* ou para sua *empresa*?"
+    )
+    db.salvar_conversa(telefone, mensagem, resp)
+    return AgentResponse(
+        text=resp,
+        buttons=[
+            {"id": "tipo_pessoal", "text": "Uso Pessoal"},
+            {"id": "tipo_empresarial", "text": "Uso Empresarial"},
+        ],
+    )
+
+
+# ============================================================
 # Pipeline principal
 # ============================================================
 
@@ -289,86 +595,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
 
     # ── Onboarding (cadastro obrigatório) ─────────────────────────────────────
     elif intencao == "onboarding" or (not usuario.get("onboarding_completo") and intencao not in ("confirmar", "cancelar")):
-        # Trata dados do onboarding que vieram na mensagem
-        atualizacoes: dict = {}
-        if dados.get("nome") and not usuario.get("nome"):
-            atualizacoes["nome"] = dados["nome"]
-        if dados.get("tipo") in ("pessoal", "empresarial") and not usuario.get("tipo"):
-            atualizacoes["tipo"] = dados["tipo"]
-        if dados.get("orcamento_mensal") is not None:
-            atualizacoes["orcamento_mensal"] = float(dados["orcamento_mensal"])
-
-        # Consulta CNPJ se fornecido
-        cnpj_raw = dados.get("cnpj")
-        if cnpj_raw:
-            resultado_cnpj = consultar_cnpj(cnpj_raw)
-            if resultado_cnpj:
-                atualizacoes["cnpj"] = resultado_cnpj["cnpj"]
-                atualizacoes["razao_social"] = resultado_cnpj["razao_social"]
-                contexto = (
-                    f"CNPJ consultado com sucesso na Receita Federal:\n"
-                    f"• Razão Social: {resultado_cnpj['razao_social']}\n"
-                    f"• Nome Fantasia: {resultado_cnpj['fantasia']}\n"
-                    f"• Situação: {resultado_cnpj['situacao']}\n"
-                    f"• Atividade: {resultado_cnpj['atividade']}\n\n"
-                    f"Mostre esses dados ao cliente e pergunte se está correto. "
-                    f"Se sim, finalize o cadastro."
-                )
-            else:
-                contexto = (
-                    "CNPJ não encontrado ou inválido. Informe gentilmente ao cliente "
-                    "que não foi possível localizar esse CNPJ na Receita Federal. "
-                    "Peça para verificar e enviar novamente, ou pular essa etapa."
-                )
-
-        if atualizacoes:
-            db.atualizar_usuario(telefone, **atualizacoes)
-            usuario = {**usuario, **atualizacoes}
-
-        # Verifica se o onboarding pode ser finalizado
-        tem_nome = bool(usuario.get("nome"))
-        tem_tipo = bool(usuario.get("tipo"))
-
-        if tem_nome and tem_tipo:
-            # Se empresarial e sem CNPJ, ainda pode finalizar (CNPJ é opcional)
-            if not usuario.get("onboarding_completo"):
-                db.atualizar_usuario(telefone, onboarding_completo=True)
-                usuario["onboarding_completo"] = True
-
-            if not contexto:
-                nome = usuario.get("nome", "")
-                tipo_txt = "empresarial" if usuario.get("tipo") == "empresarial" else "pessoal"
-                razao = usuario.get("razao_social")
-                contexto = (
-                    f"Onboarding finalizado com sucesso!\n"
-                    f"• Nome: {nome}\n"
-                    f"• Tipo: {tipo_txt}\n"
-                    + (f"• Empresa: {razao}\n" if razao else "")
-                    + (f"• Orçamento: {_formatar_valor(usuario.get('orcamento_mensal'))}/mês\n" if usuario.get("orcamento_mensal") else "")
-                    + f"\nDê as boas-vindas ao cliente pelo nome, confirme o cadastro e explique rapidamente "
-                    f"o que a Maria sabe fazer (2-3 funcionalidades principais). "
-                    f"Seja calorosa e profissional."
-                )
-        else:
-            if not contexto:
-                # Determina o que falta perguntar
-                faltam = []
-                if not tem_nome:
-                    faltam.append("nome (como o cliente gostaria de ser chamado)")
-                if not tem_tipo:
-                    faltam.append("tipo de uso (pessoal ou empresarial)")
-
-                if not historico:
-                    contexto = (
-                        "Este é o PRIMEIRO contato com o cliente. Faça a apresentação completa da Maria "
-                        "e comece o cadastro. Pergunte: como posso te chamar?"
-                    )
-                else:
-                    contexto = (
-                        f"O onboarding ainda não está completo. Faltam: {', '.join(faltam)}. "
-                        f"Peça o próximo dado faltante de forma gentil. "
-                        f"Se o tipo for empresarial, pergunte também o CNPJ para consulta."
-                    )
+        return _processar_onboarding(telefone, mensagem, usuario, historico, dados)
 
     # ── Saudação (cliente já cadastrado) ────────────────────────────────────
     elif intencao == "saudacao":
@@ -431,7 +658,12 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 "categoria": dados.get("categoria"),
             }, preview)
         else:
-            contexto = "Faltam dados para registrar a conta (valor e/ou descrição). Peça o que estiver faltando, um dado por vez."
+            faltam = []
+            if not dados.get("descricao"):
+                faltam.append("descrição (ex: Conta de luz)")
+            if not dados.get("valor"):
+                faltam.append("valor (ex: 150)")
+            contexto = f"Faltam dados para registrar a conta. Peça TUDO de uma vez: {', '.join(faltam)}. Dê exemplos curtos."
 
     elif intencao == "registrar_gasto":
         if dados.get("valor") and dados.get("descricao"):
@@ -448,7 +680,12 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 "data": data_gasto, "categoria": dados.get("categoria"),
             }, preview)
         else:
-            contexto = "Faltam dados para registrar o gasto. Peça o que estiver faltando, um dado por vez."
+            faltam = []
+            if not dados.get("descricao"):
+                faltam.append("descrição")
+            if not dados.get("valor"):
+                faltam.append("valor")
+            contexto = f"Faltam dados para registrar o gasto. Peça TUDO de uma vez: {', '.join(faltam)}. Exemplo: 'Almoço 35 reais'."
 
     elif intencao == "registrar_receita":
         if dados.get("valor") and dados.get("descricao"):
@@ -465,7 +702,12 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 "data": data_receita, "categoria": dados.get("categoria"),
             }, preview)
         else:
-            contexto = "Faltam dados para registrar a receita. Peça o que estiver faltando, um dado por vez."
+            faltam = []
+            if not dados.get("descricao"):
+                faltam.append("descrição")
+            if not dados.get("valor"):
+                faltam.append("valor")
+            contexto = f"Faltam dados para registrar a receita. Peça TUDO de uma vez: {', '.join(faltam)}. Exemplo: 'Venda de produto R$ 500'."
 
     elif intencao == "registrar_aluguel":
         if dados.get("valor") and dados.get("imovel"):
@@ -482,7 +724,12 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 "vencimento": vencimento, "locatario": dados.get("locatario"),
             }, preview)
         else:
-            contexto = "Faltam dados para registrar o aluguel. Peça o que estiver faltando, um dado por vez."
+            faltam = []
+            if not dados.get("imovel"):
+                faltam.append("nome/endereço do imóvel")
+            if not dados.get("valor"):
+                faltam.append("valor do aluguel")
+            contexto = f"Faltam dados para registrar o aluguel. Peça TUDO de uma vez: {', '.join(faltam)}."
 
     elif intencao == "cadastrar_fornecedor":
         nome = dados.get("fornecedor")
@@ -496,7 +743,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 "nome": nome, "categoria": dados.get("categoria"),
             }, preview, verbo="cadastrar")
         else:
-            contexto = "O usuário quer cadastrar um fornecedor mas não informou o nome. Pergunte o nome."
+            contexto = "O usuário quer cadastrar um fornecedor mas não informou o nome. Pergunte nome e categoria de uma vez."
 
     # ── Consultas ────────────────────────────────────────────────────────────
     elif intencao == "consultar_contas":

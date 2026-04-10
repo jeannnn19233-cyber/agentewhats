@@ -48,3 +48,46 @@ async def enviar_midia(telefone: str, image_b64: str, caption: str = "") -> None
         resp = await client.post(url, json=payload, headers=_headers())
         resp.raise_for_status()
     logger.debug("[%s] imagem enviada (caption: %s)", telefone, caption[:60])
+
+
+async def enviar_botoes(
+    telefone: str,
+    texto: str,
+    botoes: list[dict],
+    titulo: str = "",
+    rodape: str = "",
+) -> None:
+    """Envia mensagem com botões clicáveis (WhatsApp Business).
+
+    ``botoes`` — lista de dicts: [{"id": "btn1", "text": "Texto"}]
+    Fallback: se o endpoint falhar, envia como texto simples.
+    """
+    url = f"{_base_url()}/message/sendButtons/{_instance()}"
+    payload = {
+        "number": telefone,
+        "title": titulo,
+        "description": texto,
+        "footer": rodape,
+        "buttons": [
+            {
+                "buttonId": b["id"],
+                "buttonText": {"displayText": b["text"]},
+                "type": 1,
+            }
+            for b in botoes
+        ],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=payload, headers=_headers())
+            resp.raise_for_status()
+        logger.info("[%s] botões enviados (%d)", telefone, len(botoes))
+    except Exception as e:
+        logger.warning("[%s] falha ao enviar botões (%s) — fallback texto", telefone, e)
+        # Fallback: monta texto com opções numeradas
+        linhas = [texto, ""]
+        for i, b in enumerate(botoes, 1):
+            linhas.append(f"{i}. {b['text']}")
+        if rodape:
+            linhas.append(f"\n_{rodape}_")
+        await enviar_mensagem(telefone, "\n".join(linhas))

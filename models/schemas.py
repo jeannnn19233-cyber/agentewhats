@@ -10,6 +10,7 @@ class AgentResponse:
     text: str
     image_b64: str | None = None   # PNG em base64 pronto para enviar
     image_caption: str = ""        # legenda exibida abaixo da imagem no WhatsApp
+    buttons: list[dict] | None = None  # [{"id": "btn1", "text": "Texto"}] — WhatsApp Business
 
 
 # --- Contas a Pagar ---
