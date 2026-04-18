@@ -525,6 +525,15 @@ def _detectar_faixa(msg: str, faixas: list[str]) -> str | None:
     return None
 
 
+_PALAVRAS_BLOQUEADAS_NOME = {
+    "cancelar", "cancela", "cancelar cadastro", "não", "nao", "sim", "ok",
+    "voltar", "menu", "ajuda", "sair", "parar", "para", "stop",
+    "oi", "olá", "ola", "bom dia", "boa tarde", "boa noite",
+    "pessoal", "empresa", "empresarial", "pj", "pf",
+    "registrar", "consultar", "apagar", "resetar",
+}
+
+
 def _extrair_nome(msg: str) -> str | None:
     """Extrai nome de uma mensagem curta (heurística simples)."""
     m = msg.strip()
@@ -533,6 +542,14 @@ def _extrair_nome(msg: str) -> str | None:
                    "é", "nome:", "me chame de"):
         if m.lower().startswith(prefix):
             m = m[len(prefix):].strip()
+    # Rejeitar comandos/palavras que não são nomes
+    ml = m.lower()
+    if ml in _PALAVRAS_BLOQUEADAS_NOME:
+        return None
+    # Rejeitar se começa com palavra bloqueada
+    for bloq in _PALAVRAS_BLOQUEADAS_NOME:
+        if ml.startswith(bloq + " ") or ml.startswith(bloq + ","):
+            return None
     # Nome deve ter 2-60 chars, sem números
     if 2 <= len(m) <= 60 and not any(c.isdigit() for c in m):
         return m.title()
@@ -582,29 +599,22 @@ def _processar_onboarding(
             db.salvar_conversa(telefone, mensagem, resp)
             return AgentResponse(text=resp, buttons=_menu_botoes(usuario))
 
-    # === ETAPA 1: Primeiro contato — mostrar boas-vindas + botões tipo ===
-    if not historico and not usuario.get("tipo"):
-        db.salvar_conversa(telefone, mensagem, _ONBOARDING_WELCOME)
-        return AgentResponse(
-            text=_ONBOARDING_WELCOME,
-            buttons=[
-                {"id": "tipo_pessoal", "text": "Uso Pessoal"},
-                {"id": "tipo_empresarial", "text": "Uso Empresarial"},
-            ],
-        )
-
-    # === ETAPA 2: Detectar tipo (pessoal/empresarial) ===
+    # === ETAPA 1 e 2: Detectar tipo (pessoal/empresarial) ===
     if not usuario.get("tipo"):
         tipo = _detectar_tipo(mensagem)
         if not tipo:
-            # Tentar via dados do classificador
             tipo = dados.get("tipo")
         if tipo in ("pessoal", "empresarial"):
             db.atualizar_usuario(telefone, tipo=tipo)
             usuario["tipo"] = tipo
         else:
+            # Primeira vez OU não entendeu — sempre mostra boas-vindas + opções
             resp = (
-                "Desculpe, não entendi. Por favor, escolha uma opção:\n\n"
+                "Olá! Sou a *Maria*, sua assistente financeira inteligente da "
+                "*Evolution Financeiro*. 💼\n\n"
+                "Vou te ajudar a organizar suas finanças de forma simples e "
+                "eficiente — tudo aqui pelo WhatsApp.\n\n"
+                "Para começar, escolha uma opção:\n\n"
                 "1️⃣ *Uso Pessoal*\n"
                 "2️⃣ *Uso Empresarial*"
             )
