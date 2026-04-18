@@ -29,10 +29,9 @@ async def _enviar_resposta(telefone: str, resultado: AgentResponse | str):
     if resultado.image_b64:
         await enviar_midia(telefone, resultado.image_b64, resultado.image_caption)
 
-    # Se há botões, envia via sendButtons (com fallback automático para texto)
-    if resultado.buttons and resultado.text:
-        await enviar_botoes(telefone, resultado.text, resultado.buttons)
-    elif resultado.text:
+    # Sempre envia texto (garantido funcionar)
+    # Botões via sendButtons falham silenciosamente no Baileys
+    if resultado.text:
         await enviar_mensagem(telefone, resultado.text)
 
 
