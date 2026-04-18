@@ -1270,99 +1270,173 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
         )
         return _criar_pending_e_resposta(telefone, mensagem, "resetar_conta", {}, preview, verbo="resetar")
 
-    # ── Consultas ────────────────────────────────────────────────────────────
+    # ── Consultas (determinísticas — sem LLM) ──────────────────────────────
     elif intencao == "consultar_contas":
-        contas = db.contas_proximas_vencimento(tel_dados, 30)
+        contas = db.listar_contas(tel_dados, status="pendente")
         if contas:
-            lista = "\n".join(
-                f"• {c['descricao']} — {_formatar_valor(c['valor'])} — vence {c['vencimento']}"
-                for c in contas
-            )
-            contexto = f"Contas pendentes próximas do vencimento (30 dias):\n{lista}"
+            total = sum(c["valor"] for c in contas)
+            # Agrupa por mês
+            meses: dict[str, list] = {}
+            for c in contas:
+                venc = c.get("vencimento", "")
+                chave = venc[:7] if len(venc) >= 7 else "Sem data"  # AAAA-MM
+                meses.setdefault(chave, []).append(c)
+
+            partes = [f"📋 *CONTAS A PAGAR PENDENTES* ({len(contas)} contas — {_formatar_valor(total)})\n"]
+            for mes_key in sorted(meses.keys()):
+                # Formata cabeçalho do mês
+                try:
+                    m_num = int(mes_key[5:7])
+                    m_ano = mes_key[:4]
+                    nomes_mes = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                                 "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+                    cab = f"\n*{nomes_mes[m_num]}/{m_ano}*"
+                except (ValueError, IndexError):
+                    cab = f"\n*{mes_key}*"
+                partes.append(cab)
+                subtotal = 0.0
+                for c in meses[mes_key]:
+                    status_icon = "✅" if c.get("status") == "pago" else "⏳"
+                    dia = c["vencimento"][8:10] if len(c.get("vencimento", "")) >= 10 else "?"
+                    partes.append(
+                        f"  {status_icon} {dia}/{mes_key[5:7]} — {_formatar_valor(c['valor'])} — {c['descricao']}"
+                    )
+                    subtotal += c["valor"]
+                partes.append(f"  💰 Subtotal: {_formatar_valor(subtotal)}")
+
+            resp = "\n".join(partes) + _MENU_PRINCIPAL_TEXTO
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp, buttons=_BOTOES_MENU)
         else:
-            contexto = "Não há contas pendentes próximas do vencimento."
+            resp = "✅ Nenhuma conta pendente no momento! Tudo em dia." + _MENU_PRINCIPAL_TEXTO
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp, buttons=_BOTOES_MENU)
 
     elif intencao == "consultar_gastos":
         periodo = dados.get("periodo") or "mes"
         total = db.total_gastos(tel_dados, periodo)
         gastos = db.listar_gastos(tel_dados, periodo)
         if gastos:
-            lista = "\n".join(
-                f"• {g['descricao']} — {_formatar_valor(g['valor'])} ({g.get('categoria', 'sem categoria')})"
-                for g in gastos[:10]
-            )
-            contexto = f"Gastos ({periodo}) — Total: {_formatar_valor(total)}\n{lista}"
+            linhas = [f"💸 *GASTOS ({periodo.upper()})* — Total: {_formatar_valor(total)}\n"]
+            for g in gastos:
+                data_g = g.get("data", "")
+                dia = data_g[8:10] + "/" + data_g[5:7] if len(data_g) >= 10 else ""
+                cat = g.get("categoria") or "sem categoria"
+                linhas.append(f"• {dia} — {_formatar_valor(g['valor'])} — {g['descricao']} ({cat})")
+            resp = "\n".join(linhas) + _MENU_PRINCIPAL_TEXTO
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp, buttons=_BOTOES_MENU)
         else:
-            contexto = f"Nenhum gasto registrado no período ({periodo})."
+            resp = f"Nenhum gasto registrado no período ({periodo})." + _MENU_PRINCIPAL_TEXTO
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp, buttons=_BOTOES_MENU)
 
     elif intencao == "consultar_receitas":
         periodo = dados.get("periodo") or "mes"
         total = db.total_receitas(tel_dados, periodo)
         receitas = db.listar_receitas(tel_dados, periodo)
         if receitas:
-            lista = "\n".join(
-                f"• {r['descricao']} — {_formatar_valor(r['valor'])} ({r.get('categoria', 'sem categoria')})"
-                for r in receitas[:10]
-            )
-            contexto = f"Receitas ({periodo}) — Total: {_formatar_valor(total)}\n{lista}"
+            linhas = [f"💰 *RECEITAS ({periodo.upper()})* — Total: {_formatar_valor(total)}\n"]
+            for r in receitas:
+                data_r = r.get("data", "")
+                dia = data_r[8:10] + "/" + data_r[5:7] if len(data_r) >= 10 else ""
+                cat = r.get("categoria") or "sem categoria"
+                linhas.append(f"• {dia} — {_formatar_valor(r['valor'])} — {r['descricao']} ({cat})")
+            resp = "\n".join(linhas) + _MENU_PRINCIPAL_TEXTO
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp, buttons=_BOTOES_MENU)
         else:
-            contexto = f"Nenhuma receita registrada no período ({periodo})."
+            resp = f"Nenhuma receita registrada no período ({periodo})." + _MENU_PRINCIPAL_TEXTO
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp, buttons=_BOTOES_MENU)
 
     elif intencao == "fluxo_caixa":
         periodo = dados.get("periodo") or "mes"
         fc = db.fluxo_caixa(tel_dados, periodo)
-        sinal = "positivo" if fc["saldo"] >= 0 else "negativo"
-        contexto = (
-            f"Fluxo de caixa ({periodo}):\n"
-            f"• Receitas: {_formatar_valor(fc['receitas'])}\n"
-            f"• Gastos: {_formatar_valor(fc['gastos'])}\n"
-            f"• Saldo: {_formatar_valor(fc['saldo'])} ({sinal})"
+        saldo_icon = "🟢" if fc["saldo"] >= 0 else "🔴"
+        resp = (
+            f"📊 *FLUXO DE CAIXA ({periodo.upper()})*\n\n"
+            f"💰 Receitas: {_formatar_valor(fc['receitas'])}\n"
+            f"💸 Gastos: {_formatar_valor(fc['gastos'])}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"{saldo_icon} *Saldo: {_formatar_valor(fc['saldo'])}*"
+            f"{_MENU_PRINCIPAL_TEXTO}"
         )
+        db.salvar_conversa(telefone, mensagem, resp)
+        return AgentResponse(text=resp, buttons=_BOTOES_MENU)
 
     elif intencao == "consultar_fornecedores":
         fornecedores = db.listar_fornecedores(tel_dados)
         if fornecedores:
-            lista = "\n".join(f"• {f['nome']} ({f.get('categoria', 'sem categoria')})" for f in fornecedores)
-            contexto = f"Fornecedores cadastrados:\n{lista}"
+            linhas = [f"🤝 *FORNECEDORES* ({len(fornecedores)})\n"]
+            for f in fornecedores:
+                cat = f.get("categoria") or "sem categoria"
+                linhas.append(f"• {f['nome']} ({cat})")
+            resp = "\n".join(linhas) + _MENU_PRINCIPAL_TEXTO
         else:
-            contexto = "Nenhum fornecedor cadastrado ainda."
+            resp = "Nenhum fornecedor cadastrado ainda." + _MENU_PRINCIPAL_TEXTO
+        db.salvar_conversa(telefone, mensagem, resp)
+        return AgentResponse(text=resp, buttons=_BOTOES_MENU)
 
     elif intencao == "consultar_alugueis":
         alugueis = db.listar_alugueis(tel_dados)
         if alugueis:
-            lista = "\n".join(
-                f"• {a['imovel']} — {_formatar_valor(a['valor'])} — vence {a['vencimento']} ({a.get('status', '')})"
-                for a in alugueis
-            )
-            contexto = f"Aluguéis:\n{lista}"
+            linhas = [f"🏠 *ALUGUÉIS* ({len(alugueis)})\n"]
+            for a in alugueis:
+                status_icon = "✅" if a.get("status") == "pago" else "⏳"
+                linhas.append(
+                    f"{status_icon} {a['imovel']} — {_formatar_valor(a['valor'])} — vence {a['vencimento']}"
+                )
+            resp = "\n".join(linhas) + _MENU_PRINCIPAL_TEXTO
         else:
-            contexto = "Nenhum aluguel registrado."
+            resp = "Nenhum aluguel registrado." + _MENU_PRINCIPAL_TEXTO
+        db.salvar_conversa(telefone, mensagem, resp)
+        return AgentResponse(text=resp, buttons=_BOTOES_MENU)
 
     elif intencao == "resumo_financeiro":
         periodo = dados.get("periodo") or "mes"
         resumo = db.resumo_financeiro(tel_dados, periodo)
-        contexto = (
-            f"Resumo financeiro ({periodo}):\n"
-            f"• Total de gastos: {_formatar_valor(resumo['total_gastos'])} ({resumo['quantidade_gastos']} registros)\n"
-            f"• Contas pendentes: {resumo['contas_pendentes']} ({_formatar_valor(resumo['total_contas_pendentes'])})\n"
-            f"• Aluguéis pendentes: {resumo['alugueis_pendentes']} ({_formatar_valor(resumo['total_alugueis_pendentes'])})\n"
-            f"• Gastos por categoria: {json.dumps(resumo['gastos_por_categoria'], ensure_ascii=False)}"
-        )
+        fc = db.fluxo_caixa(tel_dados, periodo)
+        saldo_icon = "🟢" if fc["saldo"] >= 0 else "🔴"
+
+        linhas = [
+            f"📊 *RESUMO FINANCEIRO ({periodo.upper()})*\n",
+            f"💰 Receitas: {_formatar_valor(fc['receitas'])}",
+            f"💸 Gastos: {_formatar_valor(resumo['total_gastos'])} ({resumo['quantidade_gastos']} registros)",
+            f"📝 Contas pendentes: {resumo['contas_pendentes']} ({_formatar_valor(resumo['total_contas_pendentes'])})",
+            f"🏠 Aluguéis pendentes: {resumo['alugueis_pendentes']} ({_formatar_valor(resumo['total_alugueis_pendentes'])})",
+            f"━━━━━━━━━━━━━━━",
+            f"{saldo_icon} *Saldo: {_formatar_valor(fc['saldo'])}*",
+        ]
+
+        # Gastos por categoria
+        cats = resumo.get("gastos_por_categoria", {})
+        if cats:
+            linhas.append("\n*Gastos por categoria:*")
+            for cat, val in sorted(cats.items(), key=lambda x: -x[1]):
+                linhas.append(f"  • {cat}: {_formatar_valor(val)}")
+
+        # Contas vencendo em breve
         proximas = resumo.get("proximas_vencimento", [])
         if proximas:
-            lista = "\n".join(
-                f"  ⚠️ {c['descricao']} — {_formatar_valor(c['valor'])} — {c['vencimento']}"
-                for c in proximas
-            )
-            contexto += f"\nContas vencendo nos próximos 7 dias:\n{lista}"
+            linhas.append("\n⚠️ *Vencendo nos próximos 7 dias:*")
+            for c in proximas:
+                linhas.append(f"  • {c['descricao']} — {_formatar_valor(c['valor'])} — {c['vencimento']}")
+
+        # Orçamento
         if usuario.get("orcamento_mensal"):
             orc = float(usuario["orcamento_mensal"])
             pct = (resumo["total_gastos"] / orc * 100) if orc > 0 else 0
-            contexto += f"\nOrçamento mensal: {_formatar_valor(orc)} — utilizado: {pct:.1f}%"
+            alerta = ""
             if pct > 90:
-                contexto += " ⚠️ ALERTA: acima de 90% do orçamento!"
+                alerta = " ⚠️ *ALERTA!*"
             elif pct > 75:
-                contexto += " — atenção, acima de 75%"
+                alerta = " ⚡ Atenção"
+            linhas.append(f"\n🎯 Orçamento: {_formatar_valor(orc)} — usado {pct:.0f}%{alerta}")
+
+        resp = "\n".join(linhas) + _MENU_PRINCIPAL_TEXTO
+        db.salvar_conversa(telefone, mensagem, resp)
+        return AgentResponse(text=resp, buttons=_BOTOES_MENU)
 
     elif intencao == "dica_financeira":
         try:

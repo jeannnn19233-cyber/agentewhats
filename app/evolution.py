@@ -24,15 +24,39 @@ def _headers() -> dict:
     }
 
 
+_MAX_WHATSAPP_CHARS = 4000  # WhatsApp corta em ~4096; margem de segurança
+
+
+def _split_texto(texto: str, limite: int = _MAX_WHATSAPP_CHARS) -> list[str]:
+    """Divide texto longo em partes respeitando quebras de linha."""
+    if len(texto) <= limite:
+        return [texto]
+    partes = []
+    while texto:
+        if len(texto) <= limite:
+            partes.append(texto)
+            break
+        # Tenta cortar na última quebra de linha antes do limite
+        pos = texto.rfind("\n", 0, limite)
+        if pos == -1 or pos < limite // 2:
+            # Sem quebra boa — corta no limite
+            pos = limite
+        partes.append(texto[:pos])
+        texto = texto[pos:].lstrip("\n")
+    return partes
+
+
 async def enviar_mensagem(telefone: str, texto: str) -> None:
-    """Envia mensagem de texto via Evolution API."""
+    """Envia mensagem de texto via Evolution API. Divide automaticamente se exceder limite do WhatsApp."""
     url = f"{_base_url()}/message/sendText/{_instance()}"
+    partes = _split_texto(texto)
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            url, json={"number": telefone, "text": texto}, headers=_headers()
-        )
-        resp.raise_for_status()
-    logger.debug("[%s] mensagem enviada (%d chars)", telefone, len(texto))
+        for i, parte in enumerate(partes):
+            resp = await client.post(
+                url, json={"number": telefone, "text": parte}, headers=_headers()
+            )
+            resp.raise_for_status()
+    logger.debug("[%s] mensagem enviada (%d chars, %d partes)", telefone, len(texto), len(partes))
 
 
 async def enviar_midia(telefone: str, image_b64: str, caption: str = "") -> None:
