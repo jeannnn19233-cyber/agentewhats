@@ -260,34 +260,47 @@ def executar_pending_action(telefone: str, action: dict) -> str:
 # Helpers de confirmação (preview padronizado)
 # ============================================================
 
-_CONFIRMACAO = (
-    "\n\n━━━━━━━━━━━━━━━\n*Posso registrar?*\n\n"
-    "✅ *SIM* — confirmar (ou reaja com 👍)\n"
-    "❌ *NÃO* — cancelar (ou reaja com 👎)\n"
-    "━━━━━━━━━━━━━━━"
-)
-
-
 _ALERTA_VALOR_ALTO = 1500.0  # Confirmação especial acima deste valor
 
-def _criar_pending_e_contexto(telefone: str, action_type: str,
-                               action_data: dict, preview: str,
-                               verbo: str = "registrar") -> str:
+_BOTOES_CONFIRMACAO = [
+    {"id": "confirmar_sim", "text": "Confirmar"},
+    {"id": "confirmar_nao", "text": "Cancelar"},
+]
+
+
+def _criar_pending_e_resposta(
+    telefone: str, mensagem: str,
+    action_type: str, action_data: dict,
+    preview: str, verbo: str = "registrar",
+) -> AgentResponse:
+    """Cria pending_action e retorna AgentResponse DIRETO (sem LLM).
+
+    Isso garante que a confirmação SEMPRE aparece — o LLM não
+    pode alucinar dizendo que já executou.
+    """
     valor = action_data.get("valor")
-    alerta_alto = ""
+    alerta = ""
     if valor is not None and float(valor) > _ALERTA_VALOR_ALTO:
-        alerta_alto = (
-            f"\n\n⚠️ *ATENÇÃO: valor acima de {_formatar_valor(_ALERTA_VALOR_ALTO)}!* "
-            f"Confirme com cuidado."
+        alerta = (
+            f"\n\n⚠️ *Atenção: valor acima de {_formatar_valor(_ALERTA_VALOR_ALTO)}!*"
         )
-    db.criar_pending_action(telefone=telefone, action_type=action_type,
-                            action_data=action_data, preview=preview)
-    return (
-        f"NÃO foi salvo ainda — aguardando confirmação. "
-        f"Mostre EXATAMENTE este preview e pergunte se pode {verbo}:\n\n{preview}"
-        f"{alerta_alto}"
-        f"\n\nTermine com a pergunta de confirmação no formato EXATO:{_CONFIRMACAO}"
+
+    db.criar_pending_action(
+        telefone=telefone, action_type=action_type,
+        action_data=action_data, preview=preview,
     )
+
+    texto = (
+        f"{preview}{alerta}\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"*Posso {verbo}?*\n\n"
+        f"✅ *SIM* — confirmar\n"
+        f"❌ *NÃO* — cancelar\n"
+        f"━━━━━━━━━━━━━━━"
+    )
+
+    db.salvar_conversa(telefone, mensagem, texto)
+    return AgentResponse(text=texto, buttons=_BOTOES_CONFIRMACAO)
 
 
 # ============================================================
@@ -594,36 +607,60 @@ def _processar_onboarding(
 # Pipeline principal
 # ============================================================
 
+_PALAVRAS_SIM = {"sim", "s", "confirmar", "confirma", "confirmo", "pode", "isso", "confirmar_sim", "yes", "ok"}
+_PALAVRAS_NAO = {"não", "nao", "n", "cancelar", "cancela", "cancelo", "confirmar_nao", "no"}
+
+
 def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
     """Processa mensagem de texto e retorna AgentResponse (texto e/ou imagem)."""
     usuario = db.obter_ou_criar_usuario(telefone)
     historico = db.ultimas_conversas(telefone, limit=8)
     pending = db.obter_pending_action(telefone)
-    classificacao = classificar_intencao(mensagem, historico, pending, usuario)
-    intencao = classificacao.get("intencao", "outro")
-    dados = classificacao.get("dados", {}) or {}
+
+    # ── Fast-path: se há pending_action e resposta é sim/não, pula o LLM ──
+    msg_lower = mensagem.strip().lower()
+    if pending and msg_lower in _PALAVRAS_SIM:
+        intencao = "confirmar"
+        dados = {}
+        logger.info("[%s] fast-path confirmar (pending=%s)", telefone, pending.get("action_type"))
+    elif pending and msg_lower in _PALAVRAS_NAO:
+        intencao = "cancelar"
+        dados = {}
+        logger.info("[%s] fast-path cancelar (pending=%s)", telefone, pending.get("action_type"))
+    else:
+        classificacao = classificar_intencao(mensagem, historico, pending, usuario)
+        intencao = classificacao.get("intencao", "outro")
+        dados = classificacao.get("dados", {}) or {}
     logger.info("[%s] intenção=%s dados=%s", telefone, intencao, dados)
 
     contexto = ""
 
-    # ── Confirmação / cancelamento ───────────────────────────────────────────
+    # ── Confirmação / cancelamento (determinístico — sem LLM) ──────────────
     if intencao == "confirmar":
         if pending:
             try:
                 resultado = executar_pending_action(telefone, pending)
                 db.limpar_pending_actions(telefone)
                 logger.info("[%s] ação executada: %s", telefone, resultado)
-                contexto = f"Ação confirmada e executada: {resultado}. Agradeça brevemente e ofereça ajuda."
+                nome = usuario.get("nome") or ""
+                resp = f"✅ Pronto{', ' + nome if nome else ''}! {resultado}\n\nComo mais posso te ajudar?"
+                db.salvar_conversa(telefone, mensagem, resp)
+                return AgentResponse(text=resp)
             except Exception as e:
                 logger.error("[%s] erro ao executar pending_action: %s", telefone, e, exc_info=True)
-                contexto = "Erro ao executar a ação. Peça desculpas e sugira tentar novamente."
+                db.limpar_pending_actions(telefone)
+                resp = "❌ Ops, ocorreu um erro ao processar. Pode tentar de novo?"
+                db.salvar_conversa(telefone, mensagem, resp)
+                return AgentResponse(text=resp)
         else:
             contexto = "O usuário confirmou mas não há ação pendente. Pergunte o que ele quer fazer."
 
     elif intencao == "cancelar":
         if pending:
             db.limpar_pending_actions(telefone)
-            contexto = "Ação cancelada. Confirme o cancelamento de forma simpática e pergunte como pode ajudar."
+            resp = "❌ Cancelado! Nada foi alterado.\n\nComo posso te ajudar?"
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp)
         else:
             contexto = "Não havia nada pendente para cancelar. Pergunte o que o usuário quer fazer."
 
@@ -686,7 +723,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 + (f"• Fornecedor: {dados['fornecedor']}\n" if dados.get("fornecedor") else "")
                 + (f"• Categoria: {dados['categoria']}\n" if dados.get("categoria") else "")
             )
-            contexto = _criar_pending_e_contexto(telefone, "criar_conta", {
+            return _criar_pending_e_resposta(telefone, mensagem, "criar_conta", {
                 "descricao": dados["descricao"], "valor": dados["valor"],
                 "vencimento": vencimento, "fornecedor": dados.get("fornecedor"),
                 "categoria": dados.get("categoria"),
@@ -709,7 +746,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 f"• Data: {data_gasto}\n"
                 + (f"• Categoria: {dados['categoria']}\n" if dados.get("categoria") else "")
             )
-            contexto = _criar_pending_e_contexto(telefone, "criar_gasto", {
+            return _criar_pending_e_resposta(telefone, mensagem, "criar_gasto", {
                 "descricao": dados["descricao"], "valor": dados["valor"],
                 "data": data_gasto, "categoria": dados.get("categoria"),
             }, preview)
@@ -731,7 +768,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 f"• Data: {data_receita}\n"
                 + (f"• Categoria: {dados['categoria']}\n" if dados.get("categoria") else "")
             )
-            contexto = _criar_pending_e_contexto(telefone, "criar_receita", {
+            return _criar_pending_e_resposta(telefone, mensagem, "criar_receita", {
                 "descricao": dados["descricao"], "valor": dados["valor"],
                 "data": data_receita, "categoria": dados.get("categoria"),
             }, preview)
@@ -753,7 +790,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 f"• Vencimento: {vencimento}\n"
                 + (f"• Locatário: {dados['locatario']}\n" if dados.get("locatario") else "")
             )
-            contexto = _criar_pending_e_contexto(telefone, "criar_aluguel", {
+            return _criar_pending_e_resposta(telefone, mensagem, "criar_aluguel", {
                 "imovel": dados["imovel"], "valor": dados["valor"],
                 "vencimento": vencimento, "locatario": dados.get("locatario"),
             }, preview)
@@ -773,7 +810,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 f"• Nome: {nome}\n"
                 + (f"• Categoria: {dados['categoria']}\n" if dados.get("categoria") else "")
             )
-            contexto = _criar_pending_e_contexto(telefone, "criar_fornecedor", {
+            return _criar_pending_e_resposta(telefone, mensagem, "criar_fornecedor", {
                 "nome": nome, "categoria": dados.get("categoria"),
             }, preview, verbo="cadastrar")
         else:
@@ -794,7 +831,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
             match = next((g for g in gastos if desc and desc in g.get("descricao", "").lower()), None)
             if match:
                 preview = f"🗑️ *APAGAR GASTO*\n• {match['descricao']} — {_formatar_valor(match['valor'])}"
-                contexto = _criar_pending_e_contexto(telefone, "apagar_gasto",
+                return _criar_pending_e_resposta(telefone, mensagem, "apagar_gasto",
                     {"id": match["id"], "descricao": match["descricao"], "valor": match["valor"]},
                     preview, verbo="apagar")
             else:
@@ -816,7 +853,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
             match = next((c for c in contas if desc and desc in c.get("descricao", "").lower()), None)
             if match:
                 preview = f"🗑️ *APAGAR CONTA*\n• {match['descricao']} — {_formatar_valor(match['valor'])}"
-                contexto = _criar_pending_e_contexto(telefone, "apagar_conta",
+                return _criar_pending_e_resposta(telefone, mensagem, "apagar_conta",
                     {"id": match["id"], "descricao": match["descricao"], "valor": match["valor"]},
                     preview, verbo="apagar")
             else:
@@ -838,7 +875,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
             match = next((r for r in receitas if desc and desc in r.get("descricao", "").lower()), None)
             if match:
                 preview = f"🗑️ *APAGAR RECEITA*\n• {match['descricao']} — {_formatar_valor(match['valor'])}"
-                contexto = _criar_pending_e_contexto(telefone, "apagar_receita",
+                return _criar_pending_e_resposta(telefone, mensagem, "apagar_receita",
                     {"id": match["id"], "descricao": match["descricao"], "valor": match["valor"]},
                     preview, verbo="apagar")
             else:
@@ -860,7 +897,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
             match = next((f for f in fornecedores if nome and nome in f.get("nome", "").lower()), None)
             if match:
                 preview = f"🗑️ *APAGAR FORNECEDOR*\n• {match['nome']}"
-                contexto = _criar_pending_e_contexto(telefone, "apagar_fornecedor",
+                return _criar_pending_e_resposta(telefone, mensagem, "apagar_fornecedor",
                     {"id": match["id"], "nome": match["nome"]},
                     preview, verbo="apagar")
             else:
@@ -882,7 +919,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
             match = next((c for c in contas if desc and desc in c.get("descricao", "").lower()), None)
             if match:
                 preview = f"✅ *MARCAR COMO PAGA*\n• {match['descricao']} — {_formatar_valor(match['valor'])}"
-                contexto = _criar_pending_e_contexto(telefone, "marcar_pago",
+                return _criar_pending_e_resposta(telefone, mensagem, "marcar_pago",
                     {"id": match["id"], "descricao": match["descricao"], "valor": match["valor"]},
                     preview, verbo="marcar como paga")
             else:
@@ -901,7 +938,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
             "• Seu perfil será zerado\n\n"
             "*Essa ação é IRREVERSÍVEL!*"
         )
-        contexto = _criar_pending_e_contexto(telefone, "resetar_conta", {}, preview, verbo="resetar")
+        return _criar_pending_e_resposta(telefone, mensagem, "resetar_conta", {}, preview, verbo="resetar")
 
     # ── Consultas ────────────────────────────────────────────────────────────
     elif intencao == "consultar_contas":

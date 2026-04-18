@@ -60,14 +60,30 @@ async def enviar_botoes(
     """Envia mensagem com botões clicáveis (WhatsApp Business).
 
     ``botoes`` — lista de dicts: [{"id": "btn1", "text": "Texto"}]
-    Fallback: se o endpoint falhar, envia como texto simples.
+    Tenta 2 formatos de payload. Se ambos falharem, envia como texto.
     """
-    url = f"{_base_url()}/message/sendButtons/{_instance()}"
-    payload = {
+    headers = _headers()
+    instance = _instance()
+    base = _base_url()
+
+    # --- Formato 1: Evolution API v2 (flat) ---
+    payload_v2 = {
         "number": telefone,
-        "title": titulo,
+        "title": titulo or " ",
         "description": texto,
-        "footer": rodape,
+        "footer": rodape or " ",
+        "buttons": [
+            {"type": "reply", "displayText": b["text"], "id": b["id"]}
+            for b in botoes
+        ],
+    }
+
+    # --- Formato 2: Baileys legacy ---
+    payload_legacy = {
+        "number": telefone,
+        "title": titulo or " ",
+        "description": texto,
+        "footerText": rodape or " ",
         "buttons": [
             {
                 "buttonId": b["id"],
@@ -77,17 +93,25 @@ async def enviar_botoes(
             for b in botoes
         ],
     }
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json=payload, headers=_headers())
-            resp.raise_for_status()
-        logger.info("[%s] botões enviados (%d)", telefone, len(botoes))
-    except Exception as e:
-        logger.warning("[%s] falha ao enviar botões (%s) — fallback texto", telefone, e)
-        # Fallback: monta texto com opções numeradas
-        linhas = [texto, ""]
-        for i, b in enumerate(botoes, 1):
-            linhas.append(f"{i}. {b['text']}")
-        if rodape:
-            linhas.append(f"\n_{rodape}_")
-        await enviar_mensagem(telefone, "\n".join(linhas))
+
+    url = f"{base}/message/sendButtons/{instance}"
+
+    for label, payload in [("v2", payload_v2), ("legacy", payload_legacy)]:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                # Verifica se a API rejeitou silenciosamente
+                if body.get("error") or body.get("status") == "error":
+                    logger.warning("[%s] sendButtons %s rejeitado: %s", telefone, label, body)
+                    continue
+            logger.info("[%s] botões enviados via formato %s (%d)", telefone, label, len(botoes))
+            return  # sucesso — sai da função
+        except Exception as e:
+            logger.warning("[%s] sendButtons %s falhou: %s", telefone, label, e)
+            continue
+
+    # --- Fallback: texto com opções numeradas (sempre funciona) ---
+    logger.info("[%s] fallback texto para botões", telefone)
+    await enviar_mensagem(telefone, texto)
