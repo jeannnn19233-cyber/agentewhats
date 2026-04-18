@@ -73,6 +73,11 @@ Regras de classificação:
 - Marcar pago / já paguei / pago / quitei → "marcar_pago"
 - Apagar tudo / resetar / recomeçar / limpar dados / zerar conta → "resetar_conta"
 
+**Membros da empresa (somente admin):**
+- Adicionar membro / convidar funcionário / incluir colega / add membro + telefone → "adicionar_membro"
+- Remover membro / excluir funcionário / tirar acesso → "remover_membro"
+- Listar membros / quem tem acesso / equipe / minha equipe → "listar_membros"
+
 **Gráficos:**
 - Gráfico de contas / fornecedor → "grafico_fornecedores"
 - Gráfico de fluxo / receita vs gasto → "grafico_receita_gastos"
@@ -98,7 +103,7 @@ Regras de classificação:
 Retorne APENAS um JSON válido, sem markdown:
 
 {
-  "intencao": "onboarding" | "confirmar" | "cancelar" | "registrar_conta" | "registrar_gasto" | "registrar_receita" | "registrar_aluguel" | "cadastrar_fornecedor" | "consultar_contas" | "consultar_gastos" | "consultar_receitas" | "consultar_fornecedores" | "consultar_alugueis" | "resumo_financeiro" | "fluxo_caixa" | "dica_financeira" | "grafico_fornecedores" | "grafico_receita_gastos" | "grafico_categorias" | "configurar_perfil" | "apagar_gasto" | "apagar_conta" | "apagar_receita" | "apagar_fornecedor" | "marcar_pago" | "resetar_conta" | "saudacao" | "outro",
+  "intencao": "onboarding" | "confirmar" | "cancelar" | "registrar_conta" | "registrar_gasto" | "registrar_receita" | "registrar_aluguel" | "cadastrar_fornecedor" | "consultar_contas" | "consultar_gastos" | "consultar_receitas" | "consultar_fornecedores" | "consultar_alugueis" | "resumo_financeiro" | "fluxo_caixa" | "dica_financeira" | "grafico_fornecedores" | "grafico_receita_gastos" | "grafico_categorias" | "configurar_perfil" | "apagar_gasto" | "apagar_conta" | "apagar_receita" | "apagar_fornecedor" | "marcar_pago" | "resetar_conta" | "adicionar_membro" | "remover_membro" | "listar_membros" | "saudacao" | "outro",
   "dados": {
     "descricao": <string ou null>,
     "valor": <número ou null>,
@@ -112,7 +117,8 @@ Retorne APENAS um JSON válido, sem markdown:
     "nome": <string ou null>,
     "tipo": "pessoal" | "empresarial" | null,
     "orcamento_mensal": <número ou null>,
-    "cnpj": <string somente dígitos ou null>
+    "cnpj": <string somente dígitos ou null>,
+    "telefone_membro": <string somente dígitos ou null>
   }
 }
 

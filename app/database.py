@@ -11,10 +11,122 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+# ===================== MULTI-USUÁRIO (EMPRESA) =====================
+
+def _telefone_dados(usuario: dict) -> str:
+    """Retorna o telefone usado para queries de dados.
+
+    - Conta pessoal ou admin: usa o próprio telefone
+    - Membro de empresa: usa o telefone do admin (dados compartilhados)
+    """
+    if usuario.get("empresa_id") and usuario.get("papel") == "membro":
+        # Busca o admin da mesma empresa
+        result = (
+            supabase.table("usuarios")
+            .select("telefone")
+            .eq("empresa_id", usuario["empresa_id"])
+            .eq("papel", "admin")
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]["telefone"]
+    return usuario["telefone"]
+
+
+def listar_membros_empresa(empresa_id: str) -> list[dict]:
+    """Lista todos os membros de uma empresa."""
+    result = (
+        supabase.table("usuarios")
+        .select("telefone, nome, papel, criado_em")
+        .eq("empresa_id", empresa_id)
+        .order("criado_em")
+        .execute()
+    )
+    return result.data or []
+
+
+def adicionar_membro(telefone_novo: str, empresa_id: str,
+                     nome: str | None = None) -> dict:
+    """Adiciona um membro a uma empresa existente."""
+    # Verifica se já existe
+    existing = (
+        supabase.table("usuarios")
+        .select("*")
+        .eq("telefone", telefone_novo)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        # Atualiza usuário existente
+        updates = {
+            "empresa_id": empresa_id,
+            "papel": "membro",
+            "tipo": "empresarial",
+            "onboarding_completo": False,
+            "atualizado_em": date.today().isoformat(),
+        }
+        if nome:
+            updates["nome"] = nome
+        result = (
+            supabase.table("usuarios")
+            .update(updates)
+            .eq("telefone", telefone_novo)
+            .execute()
+        )
+        return result.data[0] if result.data else {}
+    else:
+        # Cria novo usuário como membro
+        data = {
+            "telefone": telefone_novo,
+            "empresa_id": empresa_id,
+            "papel": "membro",
+            "tipo": "empresarial",
+            "onboarding_completo": False,
+        }
+        if nome:
+            data["nome"] = nome
+        result = supabase.table("usuarios").insert(data).execute()
+        return result.data[0] if result.data else {}
+
+
+def obter_admin_empresa(empresa_id: str) -> dict | None:
+    """Retorna o admin de uma empresa (para pegar nome/razão social)."""
+    result = (
+        supabase.table("usuarios")
+        .select("telefone, nome, razao_social")
+        .eq("empresa_id", empresa_id)
+        .eq("papel", "admin")
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def remover_membro(telefone_membro: str, empresa_id: str) -> bool:
+    """Remove um membro da empresa (reseta para conta pessoal)."""
+    result = (
+        supabase.table("usuarios")
+        .update({
+            "empresa_id": None,
+            "papel": "admin",
+            "tipo": None,
+            "onboarding_completo": False,
+            "atualizado_em": date.today().isoformat(),
+        })
+        .eq("telefone", telefone_membro)
+        .eq("empresa_id", empresa_id)
+        .neq("papel", "admin")  # Não pode remover o admin
+        .execute()
+    )
+    return bool(result.data)
+
+
 # ===================== CONTAS A PAGAR =====================
 
 def criar_conta(telefone: str, descricao: str, valor: float, vencimento: str,
-                fornecedor: str | None = None, categoria: str | None = None) -> dict:
+                fornecedor: str | None = None, categoria: str | None = None,
+                criado_por: str | None = None) -> dict:
     data = {
         "telefone": telefone,
         "descricao": descricao,
@@ -26,16 +138,19 @@ def criar_conta(telefone: str, descricao: str, valor: float, vencimento: str,
         data["fornecedor"] = fornecedor
     if categoria:
         data["categoria"] = categoria
+    if criado_por:
+        data["criado_por"] = criado_por
 
     result = supabase.table("contas_pagar").insert(data).execute()
     return result.data[0] if result.data else {}
 
 
-def criar_contas_lote(telefone: str, contas: list[dict]) -> int:
+def criar_contas_lote(telefone: str, contas: list[dict],
+                      criado_por: str | None = None) -> int:
     """Insere múltiplas contas de uma vez. Retorna quantidade inserida."""
     registros = []
     for c in contas:
-        registros.append({
+        reg = {
             "telefone": telefone,
             "descricao": c.get("fornecedor", "Conta"),
             "valor": c["valor"],
@@ -43,7 +158,10 @@ def criar_contas_lote(telefone: str, contas: list[dict]) -> int:
             "fornecedor": c.get("fornecedor"),
             "status": c.get("status", "pendente"),
             "categoria": c.get("categoria"),
-        })
+        }
+        if criado_por:
+            reg["criado_por"] = criado_por
+        registros.append(reg)
     if not registros:
         return 0
     result = supabase.table("contas_pagar").insert(registros).execute()
@@ -99,12 +217,14 @@ def apagar_conta(telefone: str, conta_id: int) -> bool:
 # ===================== FORNECEDORES =====================
 
 def criar_fornecedor(telefone: str, nome: str, contato: str | None = None,
-                     categoria: str | None = None) -> dict:
+                     categoria: str | None = None, criado_por: str | None = None) -> dict:
     data = {"telefone": telefone, "nome": nome}
     if contato:
         data["contato"] = contato
     if categoria:
         data["categoria"] = categoria
+    if criado_por:
+        data["criado_por"] = criado_por
 
     result = supabase.table("fornecedores").insert(data).execute()
     return result.data[0] if result.data else {}
@@ -129,7 +249,7 @@ def apagar_fornecedor(telefone: str, fornecedor_id: int) -> bool:
 # ===================== GASTOS PESSOAIS =====================
 
 def criar_gasto(telefone: str, descricao: str, valor: float, data_gasto: str,
-                categoria: str | None = None) -> dict:
+                categoria: str | None = None, criado_por: str | None = None) -> dict:
     data = {
         "telefone": telefone,
         "descricao": descricao,
@@ -138,6 +258,8 @@ def criar_gasto(telefone: str, descricao: str, valor: float, data_gasto: str,
     }
     if categoria:
         data["categoria"] = categoria
+    if criado_por:
+        data["criado_por"] = criado_por
 
     result = supabase.table("gastos_pessoais").insert(data).execute()
     return result.data[0] if result.data else {}
@@ -182,7 +304,8 @@ def apagar_gasto(telefone: str, gasto_id: int) -> bool:
 # ===================== ALUGUÉIS =====================
 
 def criar_aluguel(telefone: str, imovel: str, valor: float, vencimento: str,
-                  locatario: str | None = None) -> dict:
+                  locatario: str | None = None,
+                  criado_por: str | None = None) -> dict:
     data = {
         "telefone": telefone,
         "imovel": imovel,
@@ -192,6 +315,8 @@ def criar_aluguel(telefone: str, imovel: str, valor: float, vencimento: str,
     }
     if locatario:
         data["locatario"] = locatario
+    if criado_por:
+        data["criado_por"] = criado_por
 
     result = supabase.table("alugueis").insert(data).execute()
     return result.data[0] if result.data else {}
@@ -300,7 +425,8 @@ def atualizar_usuario(telefone: str, **campos) -> dict:
 # ===================== RECEITAS =====================
 
 def criar_receita(telefone: str, descricao: str, valor: float,
-                  data_receita: str, categoria: str | None = None) -> dict:
+                  data_receita: str, categoria: str | None = None,
+                  criado_por: str | None = None) -> dict:
     data = {
         "telefone": telefone,
         "descricao": descricao,
@@ -309,6 +435,8 @@ def criar_receita(telefone: str, descricao: str, valor: float,
     }
     if categoria:
         data["categoria"] = categoria
+    if criado_por:
+        data["criado_por"] = criado_por
     result = supabase.table("receitas").insert(data).execute()
     return result.data[0] if result.data else {}
 

@@ -267,10 +267,12 @@ def gerar_resposta(mensagem: str, historico: list[dict],
 # Execução de ações pendentes (após confirmação)
 # ============================================================
 
-def executar_pending_action(telefone: str, action: dict) -> str:
+def executar_pending_action(telefone: str, action: dict,
+                            criado_por: str | None = None) -> str:
     """Executa uma ação que estava aguardando confirmação."""
     tipo = action.get("action_type")
     dados = action.get("action_data") or {}
+    _cb = criado_por or telefone  # quem criou o registro
 
     if tipo == "criar_conta":
         db.criar_conta(
@@ -280,6 +282,7 @@ def executar_pending_action(telefone: str, action: dict) -> str:
             vencimento=dados["vencimento"],
             fornecedor=dados.get("fornecedor"),
             categoria=dados.get("categoria"),
+            criado_por=_cb,
         )
         return f"Conta registrada: {dados['descricao']} — {_formatar_valor(dados['valor'])} — vence {dados['vencimento']}"
 
@@ -290,6 +293,7 @@ def executar_pending_action(telefone: str, action: dict) -> str:
             valor=float(dados["valor"]),
             data_gasto=dados.get("data", date.today().isoformat()),
             categoria=dados.get("categoria"),
+            criado_por=_cb,
         )
         return f"Gasto registrado: {dados['descricao']} — {_formatar_valor(dados['valor'])}"
 
@@ -300,6 +304,7 @@ def executar_pending_action(telefone: str, action: dict) -> str:
             valor=float(dados["valor"]),
             data_receita=dados.get("data", date.today().isoformat()),
             categoria=dados.get("categoria"),
+            criado_por=_cb,
         )
         return f"Receita registrada: {dados['descricao']} — {_formatar_valor(dados['valor'])}"
 
@@ -310,6 +315,7 @@ def executar_pending_action(telefone: str, action: dict) -> str:
             valor=float(dados["valor"]),
             vencimento=dados["vencimento"],
             locatario=dados.get("locatario"),
+            criado_por=_cb,
         )
         return f"Aluguel registrado: {dados['imovel']} — {_formatar_valor(dados['valor'])} — vence {dados['vencimento']}"
 
@@ -319,6 +325,7 @@ def executar_pending_action(telefone: str, action: dict) -> str:
             nome=dados["nome"],
             contato=dados.get("contato"),
             categoria=dados.get("categoria"),
+            criado_por=_cb,
         )
         return f"Fornecedor cadastrado: {dados['nome']}"
 
@@ -342,13 +349,29 @@ def executar_pending_action(telefone: str, action: dict) -> str:
         db.marcar_conta_paga(telefone, int(dados["id"]))
         return f"Conta marcada como paga: {dados.get('descricao', '')}"
 
+    if tipo == "adicionar_membro":
+        db.adicionar_membro(
+            telefone_novo=dados["telefone_membro"],
+            empresa_id=dados["empresa_id"],
+            nome=dados.get("nome"),
+        )
+        nome_m = dados.get("nome") or dados["telefone_membro"]
+        return f"Membro adicionado: {nome_m}"
+
+    if tipo == "remover_membro":
+        db.remover_membro(
+            telefone_membro=dados["telefone_membro"],
+            empresa_id=dados["empresa_id"],
+        )
+        return f"Membro removido: {dados['telefone_membro']}"
+
     if tipo == "resetar_conta":
         db.resetar_usuario(telefone)
         return "Conta resetada — todos os dados foram apagados"
 
     if tipo == "importar_lote":
         contas = dados.get("contas", [])
-        qtd = db.criar_contas_lote(telefone, contas)
+        qtd = db.criar_contas_lote(telefone, contas, criado_por=_cb)
         pagas = sum(1 for c in contas if c.get("status") == "pago")
         pendentes = qtd - pagas
         return f"{qtd} contas importadas ({pagas} pagas, {pendentes} pendentes)"
@@ -365,6 +388,24 @@ _ALERTA_VALOR_ALTO = 1500.0  # Confirmação especial acima deste valor
 _BOTOES_CONFIRMACAO = [
     {"id": "confirmar_sim", "text": "Confirmar"},
     {"id": "confirmar_nao", "text": "Cancelar"},
+]
+
+# Menu principal — exibido após conclusão de ações
+_MENU_PRINCIPAL_TEXTO = (
+    "\n\n📌 *O que deseja fazer agora?*\n\n"
+    "1️⃣ Registrar conta\n"
+    "2️⃣ Registrar gasto\n"
+    "3️⃣ Registrar receita\n"
+    "4️⃣ Consultar contas\n"
+    "5️⃣ Resumo financeiro\n"
+    "6️⃣ Ver gráficos\n\n"
+    "Ou me diga o que precisa — estou aqui! 😊"
+)
+
+_BOTOES_MENU = [
+    {"id": "menu_conta", "text": "📝 Registrar conta"},
+    {"id": "menu_gasto", "text": "💸 Registrar gasto"},
+    {"id": "menu_receita", "text": "💰 Registrar receita"},
 ]
 
 
@@ -483,6 +524,43 @@ def _processar_onboarding(
 ) -> AgentResponse:
     """Onboarding determinístico — fluxo sem LLM, profissional e rápido."""
 
+    # === MEMBRO CONVIDADO — fluxo simplificado ===
+    if usuario.get("papel") == "membro" and usuario.get("empresa_id"):
+        if not usuario.get("nome"):
+            nome = _extrair_nome(mensagem) or dados.get("nome")
+            if nome:
+                db.atualizar_usuario(telefone, nome=nome, onboarding_completo=True)
+                # Busca nome da empresa
+                admin_info = db.obter_admin_empresa(usuario["empresa_id"])
+                empresa_nome = admin_info.get("razao_social") or admin_info.get("nome", "sua empresa") if admin_info else "sua empresa"
+                resp = (
+                    f"Bem-vindo(a), *{nome}*! 🎉\n\n"
+                    f"Você foi adicionado(a) como membro da *{empresa_nome}*.\n\n"
+                    "Todos os dados são compartilhados com a empresa."
+                    f"{_MENU_PRINCIPAL_TEXTO}"
+                )
+                db.salvar_conversa(telefone, mensagem, resp)
+                return AgentResponse(text=resp, buttons=_BOTOES_MENU)
+            else:
+                resp = (
+                    "Olá! Sou a *Maria*, assistente financeira da "
+                    "*Evolution Financeiro*. 💼\n\n"
+                    "Você foi convidado(a) para acessar os dados financeiros "
+                    "da empresa. Para começar, me diz seu nome:"
+                )
+                db.salvar_conversa(telefone, mensagem, resp)
+                return AgentResponse(text=resp)
+        else:
+            # Tem nome mas onboarding não concluído
+            db.atualizar_usuario(telefone, onboarding_completo=True)
+            nome = usuario["nome"]
+            resp = (
+                f"Pronto, *{nome}*! Seu acesso está ativo. ✅"
+                f"{_MENU_PRINCIPAL_TEXTO}"
+            )
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp, buttons=_BOTOES_MENU)
+
     # === ETAPA 1: Primeiro contato — mostrar boas-vindas + botões tipo ===
     if not historico and not usuario.get("tipo"):
         db.salvar_conversa(telefone, mensagem, _ONBOARDING_WELCOME)
@@ -576,17 +654,11 @@ def _processar_onboarding(
 
         nome = usuario.get("nome", "")
         resp = (
-            f"Perfeito, *{nome}*! Seu cadastro está completo. ✅\n\n"
-            "Agora posso te ajudar com:\n"
-            "📝 Registrar contas a pagar\n"
-            "💸 Controlar gastos e despesas\n"
-            "💰 Registrar receitas\n"
-            "📊 Gerar resumos e gráficos\n"
-            "⏰ Alertas de vencimento diários\n\n"
-            "Como posso te ajudar hoje?"
+            f"Perfeito, *{nome}*! Seu cadastro está completo. ✅"
+            f"{_MENU_PRINCIPAL_TEXTO}"
         )
         db.salvar_conversa(telefone, mensagem, resp)
-        return AgentResponse(text=resp)
+        return AgentResponse(text=resp, buttons=_BOTOES_MENU)
 
     # === FLUXO EMPRESARIAL ===
     if usuario.get("tipo") == "empresarial":
@@ -676,18 +748,11 @@ def _processar_onboarding(
 
         nome = usuario.get("nome") or usuario.get("razao_social", "")
         resp = (
-            f"Perfeito! Cadastro da *{nome}* concluído. ✅\n\n"
-            "Agora posso te ajudar com:\n"
-            "📝 Contas a pagar e boletos\n"
-            "💸 Controle de despesas\n"
-            "💰 Registro de receitas\n"
-            "🤝 Cadastro de fornecedores\n"
-            "📊 Resumos financeiros e gráficos\n"
-            "⏰ Alertas de vencimento diários\n\n"
-            "Como posso te ajudar hoje?"
+            f"Perfeito! Cadastro da *{nome}* concluído. ✅"
+            f"{_MENU_PRINCIPAL_TEXTO}"
         )
         db.salvar_conversa(telefone, mensagem, resp)
-        return AgentResponse(text=resp)
+        return AgentResponse(text=resp, buttons=_BOTOES_MENU)
 
     # Fallback — não deveria chegar aqui
     resp = (
@@ -710,8 +775,32 @@ def _processar_onboarding(
 _PALAVRAS_SIM = {"sim", "s", "confirmar", "confirma", "confirmo", "pode", "isso", "confirmar_sim", "yes", "ok"}
 _PALAVRAS_NAO = {"não", "nao", "n", "cancelar", "cancela", "cancelo", "confirmar_nao", "no"}
 
+# Mapeamento de botões de menu / respostas numéricas → intenção
+_MENU_MAP: dict[str, str] = {
+    "menu_conta": "registrar_conta",
+    "menu_gasto": "registrar_gasto",
+    "menu_receita": "registrar_receita",
+    "registrar conta": "registrar_conta",
+    "registrar gasto": "registrar_gasto",
+    "registrar receita": "registrar_receita",
+    "📝 registrar conta": "registrar_conta",
+    "💸 registrar gasto": "registrar_gasto",
+    "💰 registrar receita": "registrar_receita",
+}
 
-def _processar_lote(telefone: str, mensagem: str, usuario: dict) -> AgentResponse:
+# Respostas numéricas do menu (após ação concluída)
+_MENU_NUMERICO: dict[str, str] = {
+    "1": "registrar_conta",
+    "2": "registrar_gasto",
+    "3": "registrar_receita",
+    "4": "consultar_contas",
+    "5": "resumo_financeiro",
+    "6": "grafico_categorias",
+}
+
+
+def _processar_lote(telefone: str, mensagem: str, usuario: dict,
+                    criado_por: str | None = None) -> AgentResponse:
     """Processa listagem de contas em lote — sem LLM, 100% parser."""
     contas = _parsear_lote_contas(mensagem)
     if not contas:
@@ -756,9 +845,12 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
     """Processa mensagem de texto e retorna AgentResponse (texto e/ou imagem)."""
     usuario = db.obter_ou_criar_usuario(telefone)
 
+    # Resolve telefone de dados (compartilhado para membros de empresa)
+    tel_dados = db._telefone_dados(usuario)
+
     # ── Pré-detecção: listagem em lote (pula LLM — economiza tokens) ──
     if _detectar_lote(mensagem):
-        return _processar_lote(telefone, mensagem, usuario)
+        return _processar_lote(telefone, mensagem, usuario, criado_por=telefone)
 
     historico = db.ultimas_conversas(telefone, limit=8)
     pending = db.obter_pending_action(telefone)
@@ -773,6 +865,14 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
         intencao = "cancelar"
         dados = {}
         logger.info("[%s] fast-path cancelar (pending=%s)", telefone, pending.get("action_type"))
+    elif msg_lower in _MENU_MAP:
+        intencao = _MENU_MAP[msg_lower]
+        dados = {}
+        logger.info("[%s] fast-path menu: %s → %s", telefone, msg_lower, intencao)
+    elif not pending and msg_lower in _MENU_NUMERICO:
+        intencao = _MENU_NUMERICO[msg_lower]
+        dados = {}
+        logger.info("[%s] fast-path menu numérico: %s → %s", telefone, msg_lower, intencao)
     else:
         classificacao = classificar_intencao(mensagem, historico, pending, usuario)
         intencao = classificacao.get("intencao", "outro")
@@ -785,28 +885,30 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
     if intencao == "confirmar":
         if pending:
             try:
-                resultado = executar_pending_action(telefone, pending)
+                resultado = executar_pending_action(
+                    tel_dados, pending, criado_por=telefone
+                )
                 db.limpar_pending_actions(telefone)
                 logger.info("[%s] ação executada: %s", telefone, resultado)
                 nome = usuario.get("nome") or ""
-                resp = f"✅ Pronto{', ' + nome if nome else ''}! {resultado}\n\nComo mais posso te ajudar?"
+                resp = f"✅ Pronto{', ' + nome if nome else ''}! {resultado}{_MENU_PRINCIPAL_TEXTO}"
                 db.salvar_conversa(telefone, mensagem, resp)
-                return AgentResponse(text=resp)
+                return AgentResponse(text=resp, buttons=_BOTOES_MENU)
             except Exception as e:
                 logger.error("[%s] erro ao executar pending_action: %s", telefone, e, exc_info=True)
                 db.limpar_pending_actions(telefone)
-                resp = "❌ Ops, ocorreu um erro ao processar. Pode tentar de novo?"
+                resp = f"❌ Ops, ocorreu um erro ao processar. Pode tentar de novo?{_MENU_PRINCIPAL_TEXTO}"
                 db.salvar_conversa(telefone, mensagem, resp)
-                return AgentResponse(text=resp)
+                return AgentResponse(text=resp, buttons=_BOTOES_MENU)
         else:
             contexto = "O usuário confirmou mas não há ação pendente. Pergunte o que ele quer fazer."
 
     elif intencao == "cancelar":
         if pending:
             db.limpar_pending_actions(telefone)
-            resp = "❌ Cancelado! Nada foi alterado.\n\nComo posso te ajudar?"
+            resp = f"❌ Cancelado! Nada foi alterado.{_MENU_PRINCIPAL_TEXTO}"
             db.salvar_conversa(telefone, mensagem, resp)
-            return AgentResponse(text=resp)
+            return AgentResponse(text=resp, buttons=_BOTOES_MENU)
         else:
             contexto = "Não havia nada pendente para cancelar. Pergunte o que o usuário quer fazer."
 
@@ -964,7 +1066,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
 
     # ── Exclusões ────────────────────────────────────────────────────────────
     elif intencao == "apagar_gasto":
-        gastos = db.listar_gastos(telefone, "mes")
+        gastos = db.listar_gastos(tel_dados, "mes")
         if not gastos:
             contexto = "O cliente quer apagar um gasto, mas não há gastos registrados este mês."
         else:
@@ -987,7 +1089,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 )
 
     elif intencao == "apagar_conta":
-        contas = db.listar_contas(telefone, status="pendente")
+        contas = db.listar_contas(tel_dados, status="pendente")
         if not contas:
             contexto = "O cliente quer apagar uma conta, mas não há contas pendentes."
         else:
@@ -1009,7 +1111,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 )
 
     elif intencao == "apagar_receita":
-        receitas = db.listar_receitas(telefone, "mes")
+        receitas = db.listar_receitas(tel_dados, "mes")
         if not receitas:
             contexto = "O cliente quer apagar uma receita, mas não há receitas registradas este mês."
         else:
@@ -1031,7 +1133,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 )
 
     elif intencao == "apagar_fornecedor":
-        fornecedores = db.listar_fornecedores(telefone)
+        fornecedores = db.listar_fornecedores(tel_dados)
         if not fornecedores:
             contexto = "O cliente quer apagar um fornecedor, mas não há fornecedores cadastrados."
         else:
@@ -1053,7 +1155,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                 )
 
     elif intencao == "marcar_pago":
-        contas = db.listar_contas(telefone, status="pendente")
+        contas = db.listar_contas(tel_dados, status="pendente")
         if not contas:
             contexto = "Não há contas pendentes para marcar como paga."
         else:
@@ -1074,6 +1176,88 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
                     "Pergunte qual conta o cliente já pagou."
                 )
 
+    elif intencao == "adicionar_membro":
+        if usuario.get("papel") != "admin":
+            resp = "❌ Apenas o *administrador* da empresa pode adicionar membros."
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp)
+        empresa_id = usuario.get("empresa_id")
+        if not empresa_id:
+            resp = "❌ Sua conta não está vinculada a uma empresa. Apenas contas empresariais podem ter membros."
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp)
+        tel_novo = dados.get("telefone_membro") or ""
+        tel_novo = re.sub(r'\D', '', tel_novo)
+        nome_novo = dados.get("nome") or None
+        if not tel_novo or len(tel_novo) < 10:
+            contexto = (
+                "O admin quer adicionar um membro à empresa, mas não informou o telefone. "
+                "Peça o número de WhatsApp completo (com DDD) e opcionalmente o nome do membro."
+            )
+        else:
+            preview = (
+                f"👥 *ADICIONAR MEMBRO*\n"
+                f"• Telefone: {tel_novo}\n"
+                + (f"• Nome: {nome_novo}\n" if nome_novo else "")
+                + f"• Empresa: {usuario.get('razao_social') or usuario.get('nome', '')}\n"
+            )
+            return _criar_pending_e_resposta(telefone, mensagem, "adicionar_membro", {
+                "telefone_membro": tel_novo,
+                "empresa_id": empresa_id,
+                "nome": nome_novo,
+            }, preview, verbo="adicionar")
+
+    elif intencao == "remover_membro":
+        if usuario.get("papel") != "admin":
+            resp = "❌ Apenas o *administrador* da empresa pode remover membros."
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp)
+        empresa_id = usuario.get("empresa_id")
+        if not empresa_id:
+            resp = "❌ Sua conta não está vinculada a uma empresa."
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp)
+        membros = db.listar_membros_empresa(empresa_id)
+        membros_nao_admin = [m for m in membros if m.get("papel") != "admin"]
+        if not membros_nao_admin:
+            resp = "Não há membros na empresa para remover (apenas você, admin)."
+            db.salvar_conversa(telefone, mensagem, resp)
+            return AgentResponse(text=resp)
+        tel_remover = dados.get("telefone_membro") or ""
+        tel_remover = re.sub(r'\D', '', tel_remover)
+        match_membro = next((m for m in membros_nao_admin if tel_remover and tel_remover in m.get("telefone", "")), None)
+        if match_membro:
+            nome_m = match_membro.get("nome") or match_membro["telefone"]
+            preview = f"🗑️ *REMOVER MEMBRO*\n• {nome_m} ({match_membro['telefone']})"
+            return _criar_pending_e_resposta(telefone, mensagem, "remover_membro", {
+                "telefone_membro": match_membro["telefone"],
+                "empresa_id": empresa_id,
+            }, preview, verbo="remover")
+        else:
+            lista = "\n".join(
+                f"  {i+1}. {m.get('nome') or '?'} — {m['telefone']}"
+                for i, m in enumerate(membros_nao_admin)
+            )
+            contexto = (
+                f"Membros da empresa:\n{lista}\n\n"
+                "Pergunte qual membro o admin deseja remover."
+            )
+
+    elif intencao == "listar_membros":
+        empresa_id = usuario.get("empresa_id")
+        if not empresa_id:
+            contexto = "Conta não vinculada a empresa. Não há membros para listar."
+        else:
+            membros = db.listar_membros_empresa(empresa_id)
+            if membros:
+                lista = "\n".join(
+                    f"• {m.get('nome') or '?'} — {m['telefone']} ({m.get('papel', '?')})"
+                    for m in membros
+                )
+                contexto = f"Membros da empresa:\n{lista}"
+            else:
+                contexto = "Nenhum membro cadastrado na empresa."
+
     elif intencao == "resetar_conta":
         preview = (
             "⚠️ *ATENÇÃO — RESETAR CONTA*\n\n"
@@ -1088,7 +1272,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
 
     # ── Consultas ────────────────────────────────────────────────────────────
     elif intencao == "consultar_contas":
-        contas = db.contas_proximas_vencimento(telefone, 30)
+        contas = db.contas_proximas_vencimento(tel_dados, 30)
         if contas:
             lista = "\n".join(
                 f"• {c['descricao']} — {_formatar_valor(c['valor'])} — vence {c['vencimento']}"
@@ -1100,8 +1284,8 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
 
     elif intencao == "consultar_gastos":
         periodo = dados.get("periodo") or "mes"
-        total = db.total_gastos(telefone, periodo)
-        gastos = db.listar_gastos(telefone, periodo)
+        total = db.total_gastos(tel_dados, periodo)
+        gastos = db.listar_gastos(tel_dados, periodo)
         if gastos:
             lista = "\n".join(
                 f"• {g['descricao']} — {_formatar_valor(g['valor'])} ({g.get('categoria', 'sem categoria')})"
@@ -1113,8 +1297,8 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
 
     elif intencao == "consultar_receitas":
         periodo = dados.get("periodo") or "mes"
-        total = db.total_receitas(telefone, periodo)
-        receitas = db.listar_receitas(telefone, periodo)
+        total = db.total_receitas(tel_dados, periodo)
+        receitas = db.listar_receitas(tel_dados, periodo)
         if receitas:
             lista = "\n".join(
                 f"• {r['descricao']} — {_formatar_valor(r['valor'])} ({r.get('categoria', 'sem categoria')})"
@@ -1126,7 +1310,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
 
     elif intencao == "fluxo_caixa":
         periodo = dados.get("periodo") or "mes"
-        fc = db.fluxo_caixa(telefone, periodo)
+        fc = db.fluxo_caixa(tel_dados, periodo)
         sinal = "positivo" if fc["saldo"] >= 0 else "negativo"
         contexto = (
             f"Fluxo de caixa ({periodo}):\n"
@@ -1136,7 +1320,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
         )
 
     elif intencao == "consultar_fornecedores":
-        fornecedores = db.listar_fornecedores(telefone)
+        fornecedores = db.listar_fornecedores(tel_dados)
         if fornecedores:
             lista = "\n".join(f"• {f['nome']} ({f.get('categoria', 'sem categoria')})" for f in fornecedores)
             contexto = f"Fornecedores cadastrados:\n{lista}"
@@ -1144,7 +1328,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
             contexto = "Nenhum fornecedor cadastrado ainda."
 
     elif intencao == "consultar_alugueis":
-        alugueis = db.listar_alugueis(telefone)
+        alugueis = db.listar_alugueis(tel_dados)
         if alugueis:
             lista = "\n".join(
                 f"• {a['imovel']} — {_formatar_valor(a['valor'])} — vence {a['vencimento']} ({a.get('status', '')})"
@@ -1156,7 +1340,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
 
     elif intencao == "resumo_financeiro":
         periodo = dados.get("periodo") or "mes"
-        resumo = db.resumo_financeiro(telefone, periodo)
+        resumo = db.resumo_financeiro(tel_dados, periodo)
         contexto = (
             f"Resumo financeiro ({periodo}):\n"
             f"• Total de gastos: {_formatar_valor(resumo['total_gastos'])} ({resumo['quantidade_gastos']} registros)\n"
@@ -1182,8 +1366,8 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
 
     elif intencao == "dica_financeira":
         try:
-            resumo = db.resumo_financeiro(telefone, "mes")
-            fc = db.fluxo_caixa(telefone, "mes")
+            resumo = db.resumo_financeiro(tel_dados, "mes")
+            fc = db.fluxo_caixa(tel_dados, "mes")
             contexto = (
                 f"Dados do usuário — gastos do mês: {_formatar_valor(resumo['total_gastos'])}, "
                 f"receitas: {_formatar_valor(fc['receitas'])}, "
@@ -1197,7 +1381,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
     # ── Gráficos ─────────────────────────────────────────────────────────────
     elif intencao == "grafico_fornecedores":
         from app.charts import grafico_contas_por_fornecedor
-        contas = db.listar_contas(telefone, status="pendente")
+        contas = db.listar_contas(tel_dados, status="pendente")
         if not contas:
             contexto = "Não há contas a pagar pendentes para gerar o gráfico. Sugira registrar contas primeiro."
         else:
@@ -1212,7 +1396,7 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
     elif intencao == "grafico_categorias":
         from app.charts import grafico_pizza_categorias
         periodo = dados.get("periodo") or "mes"
-        gastos = db.listar_gastos(telefone, periodo)
+        gastos = db.listar_gastos(tel_dados, periodo)
         if not gastos:
             contexto = f"Não há gastos registrados no período ({periodo}) para gerar o gráfico."
         else:
@@ -1227,8 +1411,8 @@ def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
     elif intencao == "grafico_receita_gastos":
         from app.charts import grafico_receita_vs_gastos
         periodo = dados.get("periodo") or "mes"
-        receitas = db.listar_receitas(telefone, periodo)
-        gastos = db.listar_gastos(telefone, periodo)
+        receitas = db.listar_receitas(tel_dados, periodo)
+        gastos = db.listar_gastos(tel_dados, periodo)
         if not receitas and not gastos:
             contexto = "Não há dados de receitas ou gastos para gerar o gráfico. Registre algumas transações primeiro."
         else:
