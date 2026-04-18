@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import re
-from datetime import date
+from datetime import date, datetime
 import httpx
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -13,6 +13,99 @@ from models.schemas import AgentResponse
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Parser de lote — entende listagens de contas coladas
+# ============================================================
+
+_MESES = {
+    "janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3,
+    "abril": 4, "maio": 5, "junho": 6, "julho": 7,
+    "agosto": 8, "setembro": 9, "outubro": 10,
+    "novembro": 11, "dezembro": 12,
+}
+
+# Regex: DD/MM  valor  fornecedor  [✅]
+_RE_LINHA_CONTA = re.compile(
+    r'(\d{1,2})[/\-](\d{1,2})\s+'          # dia/mês
+    r'([\d.,]+)\s+'                          # valor
+    r'(.+?)$',                               # fornecedor (+ ✅)
+    re.MULTILINE,
+)
+
+# Regex para cabeçalho de mês: *Abril*, **Maio**, Junho, etc.
+_RE_MES_HEADER = re.compile(
+    r'^\s*\*{0,2}([A-Za-zÀ-ú]+)\*{0,2}\s*$', re.MULTILINE
+)
+
+
+def _detectar_lote(mensagem: str) -> bool:
+    """Detecta se a mensagem é uma listagem de contas em lote."""
+    linhas_conta = _RE_LINHA_CONTA.findall(mensagem)
+    return len(linhas_conta) >= 3  # 3+ linhas = é lote
+
+
+def _parsear_lote_contas(mensagem: str) -> list[dict]:
+    """Parseia listagem de contas colada.
+
+    Formato esperado:
+        *Abril*
+        02/04 869,44 Fran Zelmar✅
+        08/04 2.041,00 cosmetique
+        ...
+
+    Retorna lista de dicts:
+        [{"data": "2026-04-02", "valor": 869.44,
+          "fornecedor": "Fran Zelmar", "status": "pago"}, ...]
+    """
+    ano_atual = date.today().year
+    contas = []
+
+    # Tenta detectar mês do cabeçalho
+    mes_atual = None
+    headers = {}
+    for m in _RE_MES_HEADER.finditer(mensagem):
+        nome_mes = m.group(1).lower().strip()
+        if nome_mes in _MESES:
+            headers[m.start()] = _MESES[nome_mes]
+
+    for m in _RE_LINHA_CONTA.finditer(mensagem):
+        dia = int(m.group(1))
+        mes_raw = int(m.group(2))
+        valor_str = m.group(3).replace('.', '').replace(',', '.')
+        resto = m.group(4).strip()
+
+        try:
+            valor = float(valor_str)
+        except ValueError:
+            continue
+
+        # Detecta ✅ no final
+        pago = '✅' in resto or '✓' in resto
+        fornecedor = resto.replace('✅', '').replace('✓', '').strip()
+        if not fornecedor:
+            continue
+
+        # Usa o mês da linha (DD/MM) como referência
+        mes = mes_raw
+
+        # Determina o ano (se mês > mês atual, pode ser ano que vem)
+        ano = ano_atual
+
+        try:
+            data_venc = date(ano, mes, dia).isoformat()
+        except ValueError:
+            continue
+
+        contas.append({
+            "data": data_venc,
+            "valor": valor,
+            "fornecedor": fornecedor,
+            "status": "pago" if pago else "pendente",
+        })
+
+    return contas
 client = OpenAI()
 MODEL_CLASSIFICACAO = "gpt-4o-mini"   # rápido e barato — usado para classificar intenção
 MODEL_RESPOSTA = "gpt-4o-mini"        # rápido e barato — qualidade excelente para WhatsApp
@@ -252,6 +345,13 @@ def executar_pending_action(telefone: str, action: dict) -> str:
     if tipo == "resetar_conta":
         db.resetar_usuario(telefone)
         return "Conta resetada — todos os dados foram apagados"
+
+    if tipo == "importar_lote":
+        contas = dados.get("contas", [])
+        qtd = db.criar_contas_lote(telefone, contas)
+        pagas = sum(1 for c in contas if c.get("status") == "pago")
+        pendentes = qtd - pagas
+        return f"{qtd} contas importadas ({pagas} pagas, {pendentes} pendentes)"
 
     return "Ação executada."
 
@@ -611,9 +711,55 @@ _PALAVRAS_SIM = {"sim", "s", "confirmar", "confirma", "confirmo", "pode", "isso"
 _PALAVRAS_NAO = {"não", "nao", "n", "cancelar", "cancela", "cancelo", "confirmar_nao", "no"}
 
 
+def _processar_lote(telefone: str, mensagem: str, usuario: dict) -> AgentResponse:
+    """Processa listagem de contas em lote — sem LLM, 100% parser."""
+    contas = _parsear_lote_contas(mensagem)
+    if not contas:
+        resp = "Recebi sua lista mas não consegui interpretar as linhas. Use o formato:\n\nDD/MM valor fornecedor\nEx: 02/04 869,44 Fran Zelmar✅"
+        db.salvar_conversa(telefone, mensagem[:200], resp)
+        return AgentResponse(text=resp)
+
+    pagas = [c for c in contas if c["status"] == "pago"]
+    pendentes = [c for c in contas if c["status"] == "pendente"]
+    total_geral = sum(c["valor"] for c in contas)
+    total_pagas = sum(c["valor"] for c in pagas)
+    total_pendentes = sum(c["valor"] for c in pendentes)
+
+    # Amostra das primeiras 5 linhas
+    amostra = contas[:5]
+    amostra_txt = "\n".join(
+        f"  • {c['data'][8:10]}/{c['data'][5:7]} — {_formatar_valor(c['valor'])} — {c['fornecedor']} {'✅' if c['status'] == 'pago' else '⏳'}"
+        for c in amostra
+    )
+    if len(contas) > 5:
+        amostra_txt += f"\n  ... e mais {len(contas) - 5} contas"
+
+    preview = (
+        f"📋 *IMPORTAÇÃO DE CONTAS EM LOTE*\n\n"
+        f"Encontrei *{len(contas)} contas* na sua lista:\n\n"
+        f"{amostra_txt}\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"✅ Pagas: {len(pagas)} ({_formatar_valor(total_pagas)})\n"
+        f"⏳ Pendentes: {len(pendentes)} ({_formatar_valor(total_pendentes)})\n"
+        f"💰 Total: {_formatar_valor(total_geral)}\n"
+        f"━━━━━━━━━━━━━━━"
+    )
+
+    return _criar_pending_e_resposta(
+        telefone, mensagem[:200],
+        "importar_lote", {"contas": contas},
+        preview, verbo="importar tudo",
+    )
+
+
 def processar_mensagem(telefone: str, mensagem: str) -> AgentResponse:
     """Processa mensagem de texto e retorna AgentResponse (texto e/ou imagem)."""
     usuario = db.obter_ou_criar_usuario(telefone)
+
+    # ── Pré-detecção: listagem em lote (pula LLM — economiza tokens) ──
+    if _detectar_lote(mensagem):
+        return _processar_lote(telefone, mensagem, usuario)
+
     historico = db.ultimas_conversas(telefone, limit=8)
     pending = db.obter_pending_action(telefone)
 

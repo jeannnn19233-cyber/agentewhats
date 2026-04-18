@@ -29,10 +29,15 @@ async def _enviar_resposta(telefone: str, resultado: AgentResponse | str):
     if resultado.image_b64:
         await enviar_midia(telefone, resultado.image_b64, resultado.image_caption)
 
-    # Sempre envia texto (garantido funcionar)
-    # Botões via sendButtons falham silenciosamente no Baileys
+    # Envia texto — se há botões, inclui opções numeradas no corpo
     if resultado.text:
-        await enviar_mensagem(telefone, resultado.text)
+        texto = resultado.text
+        if resultado.buttons:
+            opcoes = "\n".join(
+                f"{i}. {b['text']}" for i, b in enumerate(resultado.buttons, 1)
+            )
+            texto = f"{texto}\n\n{opcoes}"
+        await enviar_mensagem(telefone, texto)
 
 
 def extrair_telefone(data: dict) -> str:

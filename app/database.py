@@ -31,6 +31,25 @@ def criar_conta(telefone: str, descricao: str, valor: float, vencimento: str,
     return result.data[0] if result.data else {}
 
 
+def criar_contas_lote(telefone: str, contas: list[dict]) -> int:
+    """Insere múltiplas contas de uma vez. Retorna quantidade inserida."""
+    registros = []
+    for c in contas:
+        registros.append({
+            "telefone": telefone,
+            "descricao": c.get("fornecedor", "Conta"),
+            "valor": c["valor"],
+            "vencimento": c["data"],
+            "fornecedor": c.get("fornecedor"),
+            "status": c.get("status", "pendente"),
+            "categoria": c.get("categoria"),
+        })
+    if not registros:
+        return 0
+    result = supabase.table("contas_pagar").insert(registros).execute()
+    return len(result.data) if result.data else 0
+
+
 def listar_contas(telefone: str, status: str | None = None) -> list[dict]:
     query = supabase.table("contas_pagar").select("*").eq("telefone", telefone).order("vencimento")
     if status:
